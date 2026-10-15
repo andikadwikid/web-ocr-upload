@@ -26,6 +26,16 @@ python server.py
 Buka <http://localhost:8080>. Opsi: `python server.py --port 9000`, atau `--host 0.0.0.0` agar bisa dibuka
 dari HP di jaringan Wi-Fi yang sama (hati-hati: siapa pun di jaringan itu bisa memakainya).
 
+### Lewat Docker
+
+Butuh Docker Desktop (atau Docker Engine) terpasang.
+
+```bash
+docker compose up --build
+```
+
+Buka <http://localhost:8080>. Untuk berhenti: `docker compose down`.
+
 ## Cara pakai
 
 1. Pilih foto/folder, tarik & lepas, atau tempel (Ctrl+V).
