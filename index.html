@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OCR Angka Massal</title>
+  <meta name="description" content="Unggah banyak foto sekaligus dan ambil angka di dalamnya dengan OCR. Diproses sepenuhnya di browser.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232563eb'/%3E%3Ctext x='16' y='23' font-family='monospace' font-size='20' font-weight='700' text-anchor='middle' fill='white'%3E19%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/style.css">
+  <script src="vendor/tesseract/tesseract.min.js" defer></script>
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <div class="page">
+    <header class="hero">
+      <h1>OCR Angka Massal</h1>
+      <p>Unggah banyak foto sekaligus, angka di dalamnya dibaca otomatis.
+        Semua diproses di browser Anda &mdash; foto tidak dikirim ke server mana pun.</p>
+    </header>
+
+    <main>
+      <section id="dropzone" class="dropzone" aria-label="Area unggah foto">
+        <svg class="dz-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <p class="dz-title">Tarik &amp; lepas foto atau folder di sini</p>
+        <div class="dz-actions">
+          <button id="pick-files" type="button" class="btn btn-primary">Pilih foto</button>
+          <button id="pick-folder" type="button" class="btn">Pilih folder</button>
+        </div>
+        <p class="dz-hint">atau tempel dari clipboard (Ctrl+V) &middot; JPG, PNG, WebP, BMP, GIF</p>
+        <input id="file-input" type="file" accept="image/*" multiple hidden>
+        <input id="folder-input" type="file" webkitdirectory hidden>
+      </section>
+
+      <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+
+      <details class="settings" id="settings">
+        <summary>Pengaturan OCR</summary>
+        <div class="settings-grid">
+          <label class="field field-check">
+            <input type="checkbox" id="opt-digits">
+            <span>
+              <strong>Mode angka murni</strong>
+              <small>Nyalakan bila foto hanya berisi angka (meteran, nomor seri). Huruf dipaksa jadi angka, jadi
+                jangan dipakai untuk struk/label bertulisan &mdash; &ldquo;3 x 5.000&rdquo; bisa terbaca &ldquo;35.000&rdquo;.</small>
+            </span>
+          </label>
+
+          <label class="field">
+            <strong>Tata letak foto</strong>
+            <select id="opt-psm">
+              <option value="3">Otomatis</option>
+              <option value="6">Satu blok teks / tabel</option>
+              <option value="7">Satu baris saja</option>
+              <option value="11">Angka tersebar (struk, meteran, label)</option>
+            </select>
+            <small>Pilih yang paling mirip dengan isi foto Anda.</small>
+          </label>
+
+          <label class="field">
+            <strong>Perbaikan gambar</strong>
+            <select id="opt-pre">
+              <option value="auto">Otomatis (kontras + latar gelap)</option>
+              <option value="bw">Hitam-putih (foto buram / bayangan)</option>
+              <option value="none">Tanpa perbaikan</option>
+            </select>
+            <small>Dilakukan sebelum OCR; foto asli tidak diubah.</small>
+          </label>
+
+          <label class="field">
+            <strong>Proses paralel</strong>
+            <input type="number" id="opt-workers" min="1" max="8" step="1">
+            <small>Lebih banyak = lebih cepat, tetapi memakai lebih banyak memori.</small>
+          </label>
+        </div>
+      </details>
+
+      <section id="toolbar" class="toolbar" hidden>
+        <div class="summary">
+          <div id="summary-text" class="summary-text" aria-live="polite"></div>
+          <progress id="overall" max="1" value="0"></progress>
+        </div>
+
+        <div class="toolbar-row">
+          <div class="btn-group">
+            <button id="start" type="button" class="btn btn-primary">Mulai OCR</button>
+            <button id="stop" type="button" class="btn" hidden>Berhenti</button>
+            <button id="redo" type="button" class="btn">Proses ulang semua</button>
+            <button id="clear" type="button" class="btn btn-danger-ghost">Hapus semua</button>
+          </div>
+
+          <div class="export">
+            <label class="inline-check"><input type="checkbox" id="opt-per-number"> Satu baris per angka</label>
+            <label class="inline-select">
+              <span>CSV</span>
+              <select id="opt-delim" aria-label="Pemisah CSV">
+                <option value=";">pemisah ; (Excel Indonesia)</option>
+                <option value=",">pemisah , (umum)</option>
+              </select>
+            </label>
+            <button id="download" type="button" class="btn">Unduh CSV</button>
+            <button id="copy" type="button" class="btn">Salin ke Excel</button>
+          </div>
+        </div>
+      </section>
+
+      <p id="empty" class="empty">Belum ada foto. Hasil pembacaan akan muncul di sini.</p>
+      <ol id="results" class="results"></ol>
+    </main>
+
+    <footer class="footer">
+      Ditenagai <a href="https://github.com/naptha/tesseract.js" target="_blank" rel="noopener">Tesseract.js</a>.
+      Hasil OCR bisa keliru &mdash; periksa kolom bertanda kuning/merah dan koreksi langsung di kolom angka.
+    </footer>
+  </div>
+
+  <dialog id="viewer" class="viewer">
+    <form method="dialog" class="viewer-inner">
+      <header class="viewer-head">
+        <strong id="viewer-name"></strong>
+        <button class="btn btn-icon" aria-label="Tutup">&times;</button>
+      </header>
+      <div class="viewer-body">
+        <img id="viewer-img" alt="Foto asli">
+        <details>
+          <summary>Teks mentah hasil OCR</summary>
+          <pre id="viewer-raw"></pre>
+        </details>
+      </div>
+    </form>
+  </dialog>
+
+  <template id="row-tpl">
+    <li class="row" data-status="queued">
+      <button class="thumb" type="button" aria-label="Lihat foto">
+        <img alt="" hidden>
+        <svg class="thumb-ph" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6Zm3 10 3.2-4 2.3 2.8 1.7-2.1L18 16H7Z" fill="currentColor" opacity=".35"/></svg>
+      </button>
+
+      <div class="info">
+        <div class="name"></div>
+        <div class="meta"><span class="status"></span><span class="sep"> &middot; </span><span class="size"></span></div>
+        <progress class="row-bar" max="1" value="0"></progress>
+      </div>
+
+      <div class="result">
+        <input class="numbers" type="text" inputmode="decimal" autocomplete="off" spellcheck="false"
+               placeholder="—" aria-label="Angka terbaca (pisahkan dengan spasi)">
+        <div class="note"></div>
+      </div>
+
+      <div class="conf"><span class="badge"></span></div>
+
+      <div class="actions">
+        <button class="icon-btn retry" type="button" title="Proses ulang" aria-label="Proses ulang">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.6-5.9M20 4v5h-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button class="icon-btn remove" type="button" title="Hapus" aria-label="Hapus">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+    </li>
+  </template>
+</body>
+</html>

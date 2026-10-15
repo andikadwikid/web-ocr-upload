@@ -1,0 +1,13 @@
+{
+  "name": "web-ocr-upload",
+  "version": "1.0.0",
+  "description": "OCR angka dari banyak foto sekaligus, berjalan sepenuhnya di browser.",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  }
+}
