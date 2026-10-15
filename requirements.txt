@@ -1,0 +1,7 @@
+# Server web
+Flask>=3.0
+waitress>=3.0
+
+# OCR: model PaddleOCR (ONNX) sudah ikut di dalam paket, tidak ada unduhan tambahan.
+# Paket ini juga membawa onnxruntime, opencv-python, numpy, dan Pillow.
+rapidocr-onnxruntime==1.2.3

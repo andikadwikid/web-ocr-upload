@@ -4,18 +4,17 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OCR Angka Massal</title>
-  <meta name="description" content="Unggah banyak foto sekaligus dan ambil angka di dalamnya dengan OCR. Diproses sepenuhnya di browser.">
+  <meta name="description" content="Unggah banyak foto kartu (e-money, dll.) sekaligus dan ambil nomornya dengan OCR, lengkap dengan validasi checksum Luhn.">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232563eb'/%3E%3Ctext x='16' y='23' font-family='monospace' font-size='20' font-weight='700' text-anchor='middle' fill='white'%3E19%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="css/style.css">
-  <script src="vendor/tesseract/tesseract.min.js" defer></script>
   <script type="module" src="js/app.js"></script>
 </head>
 <body>
   <div class="page">
     <header class="hero">
       <h1>OCR Angka Massal</h1>
-      <p>Unggah banyak foto sekaligus, angka di dalamnya dibaca otomatis.
-        Semua diproses di browser Anda &mdash; foto tidak dikirim ke server mana pun.</p>
+      <p>Unggah banyak foto kartu e-money sekaligus; nomor kartunya dibaca otomatis dan dicek dengan checksum Luhn.
+        Foto hanya diproses oleh server OCR di komputer Anda sendiri &mdash; tidak dikirim ke internet.</p>
     </header>
 
     <main>
@@ -36,40 +35,34 @@
       <details class="settings" id="settings">
         <summary>Pengaturan OCR</summary>
         <div class="settings-grid">
+          <label class="field">
+            <strong>Yang dibaca</strong>
+            <select id="opt-mode">
+              <option value="card">Nomor kartu (e-money, dll.)</option>
+              <option value="any">Semua angka di foto</option>
+            </select>
+            <small>Mode kartu menggabungkan potongan angka dalam satu baris dan hanya mengambil nomor dengan panjang yang tepat.</small>
+          </label>
+
+          <label class="field">
+            <strong>Panjang nomor kartu</strong>
+            <input type="number" id="opt-length" min="8" max="24" step="1">
+            <small>Jumlah digit. Kartu e-money umumnya 16 digit.</small>
+          </label>
+
           <label class="field field-check">
-            <input type="checkbox" id="opt-digits">
+            <input type="checkbox" id="opt-luhn">
             <span>
-              <strong>Mode angka murni</strong>
-              <small>Nyalakan bila foto hanya berisi angka (meteran, nomor seri). Huruf dipaksa jadi angka, jadi
-                jangan dipakai untuk struk/label bertulisan &mdash; &ldquo;3 x 5.000&rdquo; bisa terbaca &ldquo;35.000&rdquo;.</small>
+              <strong>Cek checksum Luhn</strong>
+              <small>Mendeteksi digit yang salah dibaca; nomor yang gagal diberi tanda &ldquo;Periksa&rdquo;.
+                Matikan bila jenis kartu Anda memang tidak memakai Luhn.</small>
             </span>
           </label>
 
           <label class="field">
-            <strong>Tata letak foto</strong>
-            <select id="opt-psm">
-              <option value="3">Otomatis</option>
-              <option value="6">Satu blok teks / tabel</option>
-              <option value="7">Satu baris saja</option>
-              <option value="11">Angka tersebar (struk, meteran, label)</option>
-            </select>
-            <small>Pilih yang paling mirip dengan isi foto Anda.</small>
-          </label>
-
-          <label class="field">
-            <strong>Perbaikan gambar</strong>
-            <select id="opt-pre">
-              <option value="auto">Otomatis (kontras + latar gelap)</option>
-              <option value="bw">Hitam-putih (foto buram / bayangan)</option>
-              <option value="none">Tanpa perbaikan</option>
-            </select>
-            <small>Dilakukan sebelum OCR; foto asli tidak diubah.</small>
-          </label>
-
-          <label class="field">
             <strong>Proses paralel</strong>
-            <input type="number" id="opt-workers" min="1" max="8" step="1">
-            <small>Lebih banyak = lebih cepat, tetapi memakai lebih banyak memori.</small>
+            <input type="number" id="opt-workers" min="1" max="4" step="1">
+            <small>Jumlah foto yang dikirim ke server bersamaan.</small>
           </label>
         </div>
       </details>
@@ -108,8 +101,8 @@
     </main>
 
     <footer class="footer">
-      Ditenagai <a href="https://github.com/naptha/tesseract.js" target="_blank" rel="noopener">Tesseract.js</a>.
-      Hasil OCR bisa keliru &mdash; periksa kolom bertanda kuning/merah dan koreksi langsung di kolom angka.
+      Mesin OCR: <a href="https://github.com/RapidAI/RapidOCR" target="_blank" rel="noopener">RapidOCR</a> (model PaddleOCR).
+      Hasil OCR bisa keliru &mdash; periksa baris bertanda &ldquo;Periksa&rdquo; dan koreksi langsung di kolom nomor.
     </footer>
   </div>
 
@@ -139,12 +132,12 @@
       <div class="info">
         <div class="name"></div>
         <div class="meta"><span class="status"></span><span class="sep"> &middot; </span><span class="size"></span></div>
-        <progress class="row-bar" max="1" value="0"></progress>
+        <div class="row-bar" role="progressbar" aria-label="Memproses"></div>
       </div>
 
       <div class="result">
         <input class="numbers" type="text" inputmode="decimal" autocomplete="off" spellcheck="false"
-               placeholder="—" aria-label="Angka terbaca (pisahkan dengan spasi)">
+               placeholder="—" aria-label="Nomor terbaca (pisahkan beberapa nomor dengan titik koma)">
         <div class="note"></div>
       </div>
 

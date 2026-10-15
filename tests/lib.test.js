@@ -1,89 +1,91 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  lowestConfidence,
   buildExportRows,
+  cardStatus,
   classifyFile,
-  extractFromPage,
-  extractNumbers,
-  fitSize,
-  otsuThreshold,
+  groupDigits,
+  lowestConfidence,
+  luhnValid,
+  normalizeCardValue,
   parseManualNumbers,
-  preprocessPixels,
   toCSV,
   toTSV,
 } from '../js/lib.js';
 
-test('extractNumbers: bilangan bulat, desimal, ribuan, negatif', () => {
-  assert.deepEqual(extractNumbers('Total 12 345 dan 3.14, 1,234.56 serta -7'), ['12', '345', '3.14', '1,234.56', '-7']);
-  assert.deepEqual(extractNumbers('1.234,56'), ['1.234,56']);
+const CARD = '6032981234567899'; // lolos Luhn
+
+test('luhnValid: nomor valid, satu digit salah, dan input bukan digit', () => {
+  assert.equal(luhnValid(CARD), true);
+  assert.equal(luhnValid('6032981234567890'), false);
+  assert.equal(luhnValid(''), false);
+  assert.equal(luhnValid('6032 9812'), false);
 });
 
-test('extractNumbers: tanda hubung di antara angka bukan tanda negatif', () => {
-  assert.deepEqual(extractNumbers('0812-3456-7890'), ['0812', '3456', '7890']);
-  assert.deepEqual(extractNumbers('suhu -5 derajat'), ['-5']);
+test('luhnValid: setiap kesalahan satu digit terdeteksi', () => {
+  for (let pos = 0; pos < CARD.length; pos++) {
+    for (const d of '0123456789') {
+      if (d !== CARD[pos]) assert.equal(luhnValid(CARD.slice(0, pos) + d + CARD.slice(pos + 1)), false, `${pos}:${d}`);
+    }
+  }
 });
 
-test('extractNumbers: pemisah di ujung dibuang, teks tanpa angka kosong', () => {
-  assert.deepEqual(extractNumbers('harga 100. lalu 200,'), ['100', '200']);
-  assert.deepEqual(extractNumbers('tidak ada angka'), []);
-  assert.deepEqual(extractNumbers(''), []);
-  assert.deepEqual(extractNumbers(undefined), []);
+test('groupDigits & normalizeCardValue', () => {
+  assert.equal(groupDigits(CARD), '6032 9812 3456 7899');
+  assert.equal(groupDigits('12345'), '1234 5');
+  assert.equal(normalizeCardValue(' 6032981234567899 '), '6032 9812 3456 7899');
+  assert.equal(normalizeCardValue('6032-9812-3456-7899'), '6032 9812 3456 7899');
+  assert.equal(normalizeCardValue('ABC 123'), 'ABC 123'); // bukan murni angka: dibiarkan
 });
 
-test('extractFromPage: memakai confidence per kata', () => {
-  const page = {
-    confidence: 50,
-    text: '12 abc 34',
-    blocks: [{ paragraphs: [{ lines: [{ words: [
-      { text: '12', confidence: 96.4 },
-      { text: 'abc', confidence: 20 },
-      { text: '34', confidence: 71 },
-    ] }] }] }],
-  };
-  assert.deepEqual(extractFromPage(page), [
-    { value: '12', confidence: 96.4 },
-    { value: '34', confidence: 71 },
-  ]);
+test('cardStatus: panjang & Luhn; null bila tidak berlaku', () => {
+  const opt = { mode: 'card', length: 16, luhn: true };
+  assert.deepEqual(cardStatus('6032 9812 3456 7899', opt), { digits: CARD, lengthOk: true, luhn: true });
+  assert.deepEqual(cardStatus('6032 9812 3456 7890', opt), { digits: '6032981234567890', lengthOk: true, luhn: false });
+  assert.deepEqual(cardStatus('6032 9812 3456 789', opt), { digits: '603298123456789', lengthOk: false, luhn: null });
+  assert.equal(cardStatus(CARD, { ...opt, luhn: false }).luhn, null);
+  assert.deepEqual(cardStatus('65.000', { mode: 'any', length: 16, luhn: true }), { digits: '65.000', lengthOk: null, luhn: null });
 });
 
-test('extractFromPage: tanpa blocks jatuh ke teks + confidence halaman', () => {
-  assert.deepEqual(extractFromPage({ text: 'a 5 b 6', confidence: 88 }), [
-    { value: '5', confidence: 88 },
-    { value: '6', confidence: 88 },
-  ]);
-  assert.deepEqual(extractFromPage(null), []);
+test('parseManualNumbers: spasi ada di dalam nomor, pemisah antar-nomor ; | atau baris baru', () => {
+  assert.deepEqual(parseManualNumbers('6032 9812 3456 7899 ; 4539 5787 6362 1486'), ['6032 9812 3456 7899', '4539 5787 6362 1486']);
+  assert.deepEqual(parseManualNumbers('a|b\nc'), ['a', 'b', 'c']);
+  assert.deepEqual(parseManualNumbers('   '), []);
 });
 
 test('lowestConfidence: memakai nilai terendah agar angka ragu-ragu tidak tersembunyi', () => {
   assert.equal(lowestConfidence([]), null);
-  assert.equal(lowestConfidence([{ confidence: 96 }, { confidence: 42 }, { confidence: 90 }]), 42);
-});
-
-test('parseManualNumbers: pisah spasi/titik koma', () => {
-  assert.deepEqual(parseManualNumbers(' 12  34;56 '), ['12', '34', '56']);
-  assert.deepEqual(parseManualNumbers('   '), []);
+  assert.equal(lowestConfidence([96, 42, 90]), 42);
 });
 
 const items = [
-  { name: 'a.jpg', numbers: ['12', '1,5'], confidence: 91.6 },
+  { name: 'a.jpg', numbers: [{ value: '6032 9812 3456 7899', luhn: true }, { value: '1234 5678 1234 5678', luhn: false }], confidence: 91.6 },
   { name: 'b.jpg', numbers: [], confidence: null },
+  { name: 'c.jpg', numbers: [{ value: '65.000', luhn: null }], confidence: 80 },
 ];
 
 test('buildExportRows: satu baris per gambar', () => {
-  assert.deepEqual(buildExportRows(items), [
-    ['nama_file', 'angka', 'jumlah_angka', 'keyakinan_persen'],
-    ['a.jpg', '12 | 1,5', '2', '92'],
-    ['b.jpg', '', '0', ''],
+  assert.deepEqual(buildExportRows(items, { card: true }), [
+    ['nama_file', 'nomor_kartu', 'jumlah', 'keyakinan_persen', 'luhn'],
+    ['a.jpg', '6032 9812 3456 7899 | 1234 5678 1234 5678', '2', '92', 'tidak_valid'],
+    ['b.jpg', '', '0', '', ''],
+    ['c.jpg', '65.000', '1', '80', ''],
   ]);
+  assert.equal(buildExportRows(items)[0][1], 'angka');
+});
+
+test('buildExportRows: luhn gambar = valid hanya bila semua nomornya valid', () => {
+  const one = [{ name: 'x.jpg', numbers: [{ value: 'v', luhn: true }], confidence: 90 }];
+  assert.equal(buildExportRows(one)[1][4], 'valid');
 });
 
 test('buildExportRows: satu baris per angka, gambar tanpa angka tetap muncul', () => {
-  assert.deepEqual(buildExportRows(items, { perNumber: true }), [
-    ['nama_file', 'urutan', 'angka', 'keyakinan_persen'],
-    ['a.jpg', '1', '12', '92'],
-    ['a.jpg', '2', '1,5', '92'],
-    ['b.jpg', '', '', ''],
+  assert.deepEqual(buildExportRows(items, { perNumber: true, card: true }), [
+    ['nama_file', 'urutan', 'nomor_kartu', 'keyakinan_persen', 'luhn'],
+    ['a.jpg', '1', '6032 9812 3456 7899', '92', 'valid'],
+    ['a.jpg', '2', '1234 5678 1234 5678', '92', 'tidak_valid'],
+    ['b.jpg', '', '', '', ''],
+    ['c.jpg', '1', '65.000', '80', ''],
   ]);
 });
 
@@ -98,50 +100,8 @@ test('toCSV: BOM, kutip, delimiter, dan netralisasi rumus pada nama file', () =>
   assert.equal(toCSV([['x', '1;5']], ';').slice(1).trim(), 'x;"1;5"');
 });
 
-test('toTSV: tab dan baris baru di dalam sel dibersihkan', () => {
-  assert.equal(toTSV([['a\tb', 'c\nd'], ['1', '2']]), 'a b\tc d\n1\t2');
-});
-
-test('fitSize: perkecil yang besar, perbesar yang kecil, biarkan yang sedang', () => {
-  assert.deepEqual(fitSize(4800, 3200), { width: 2400, height: 1600, scale: 0.5 });
-  assert.deepEqual(fitSize(300, 100), { width: 900, height: 300, scale: 3 });
-  assert.deepEqual(fitSize(10, 10), { width: 30, height: 30, scale: 3 });
-  assert.deepEqual(fitSize(1200, 800), { width: 1200, height: 800, scale: 1 });
-});
-
-test('otsuThreshold: memisahkan dua puncak histogram', () => {
-  const hist = new Uint32Array(256);
-  hist[30] = 500;
-  hist[220] = 500;
-  const t = otsuThreshold(hist, 1000);
-  assert.ok(t >= 30 && t < 220, `ambang ${t}`);
-});
-
-function rgba(values) {
-  const data = new Uint8ClampedArray(values.length * 4);
-  values.forEach((v, i) => data.set([v, v, v, 255], i * 4));
-  return data;
-}
-
-test('preprocessPixels: balik warna untuk teks terang di latar gelap', () => {
-  // 90% piksel gelap (latar), 10% terang (teks)
-  const values = [...Array(90).fill(20), ...Array(10).fill(230)];
-  const data = rgba(values);
-  const info = preprocessPixels(data, 'auto');
-  assert.equal(info.invert, true);
-  assert.ok(data[0] > 200, 'latar menjadi terang'); // piksel latar
-  assert.ok(data[95 * 4] < 60, 'teks menjadi gelap'); // piksel teks
-});
-
-test('preprocessPixels: mode bw menghasilkan hanya 0 atau 255; mode none tidak mengubah', () => {
-  const data = rgba([...Array(50).fill(200), ...Array(50).fill(60)]);
-  preprocessPixels(data, 'bw');
-  for (let i = 0; i < data.length; i += 4) assert.ok(data[i] === 0 || data[i] === 255);
-
-  const same = rgba([10, 120, 240]);
-  const copy = same.slice();
-  preprocessPixels(same, 'none');
-  assert.deepEqual(same, copy);
+test('toTSV: tab dan baris baru di dalam sel dibersihkan; nomor berspasi tetap utuh', () => {
+  assert.equal(toTSV([['a\tb', 'c\nd'], ['1', '6032 9812 3456 7899']]), 'a b\tc d\n1\t6032 9812 3456 7899');
 });
 
 test('classifyFile', () => {

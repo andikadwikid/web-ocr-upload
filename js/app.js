@@ -1,40 +1,36 @@
 import {
   buildExportRows,
+  cardStatus,
   classifyFile,
-  extractFromPage,
   fileKey,
-  fitSize,
   formatBytes,
   formatDuration,
   lowestConfidence,
+  normalizeCardValue,
   parseManualNumbers,
-  preprocessPixels,
   toCSV,
   toTSV,
 } from './lib.js';
 
 // ---------------------------------------------------------------- konfigurasi
 
-/** Semua aset OCR disajikan dari repo ini (tanpa CDN) agar bisa dipakai offline. */
-const ASSETS = {
-  workerPath: 'vendor/tesseract/worker.min.js',
-  corePath: 'vendor/tesseract/tesseract-core-simd-lstm.wasm.js',
-  langPath: 'vendor/tessdata',
-};
-const DIGIT_WHITELIST = '0123456789.,-';
+const API = { health: 'api/health', ocr: 'api/ocr' };
 const THUMB_SIZE = 112;
 const CONF_OK = 80;
 const CONF_WARN = 60;
-const SETTINGS_KEY = 'ocr-angka-massal:settings:v1';
+const SETTINGS_KEY = 'ocr-angka-massal:settings:v2';
+const VALUE_SEPARATOR = ' ; ';
 
 const defaultSettings = {
-  digitsOnly: false,
-  psm: '3',
-  preprocess: 'auto',
-  concurrency: Math.min(3, Math.max(1, (navigator.hardwareConcurrency || 4) - 1)),
+  mode: 'card', // 'card' = nomor kartu, 'any' = semua angka
+  length: 16,
+  luhn: true,
+  concurrency: 2,
   perNumber: false,
   delimiter: ';',
 };
+
+class ServerDownError extends Error {}
 
 // ---------------------------------------------------------------------- state
 
@@ -62,9 +58,9 @@ const els = {
   viewerName: $('viewer-name'),
   viewerImg: $('viewer-img'),
   viewerRaw: $('viewer-raw'),
-  optDigits: $('opt-digits'),
-  optPsm: $('opt-psm'),
-  optPre: $('opt-pre'),
+  optMode: $('opt-mode'),
+  optLength: $('opt-length'),
+  optLuhn: $('opt-luhn'),
   optWorkers: $('opt-workers'),
   optPerNumber: $('opt-per-number'),
   optDelim: $('opt-delim'),
@@ -75,9 +71,9 @@ const settings = loadSettings();
 const state = {
   items: [],
   keys: new Set(),
-  slots: [], // worker OCR yang sedang hidup
   running: false,
   stopRequested: false,
+  serverDown: false,
   busyMessage: '',
   runStartedAt: 0,
   runCompleted: 0,
@@ -87,13 +83,22 @@ const state = {
 
 // ----------------------------------------------------------------- pengaturan
 
+function clamp(value, min, max, fallback) {
+  const n = Math.round(Number(value));
+  return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+}
+
 function loadSettings() {
+  let saved = {};
   try {
-    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}');
-    return { ...defaultSettings, ...saved };
+    saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}') ?? {};
   } catch {
-    return { ...defaultSettings };
+    /* penyimpanan diblokir atau isinya rusak: pakai bawaan */
   }
+  const merged = { ...defaultSettings, ...saved };
+  merged.length = clamp(merged.length, 8, 24, defaultSettings.length);
+  merged.concurrency = clamp(merged.concurrency, 1, 4, defaultSettings.concurrency);
+  return merged;
 }
 
 function saveSettings() {
@@ -104,32 +109,37 @@ function saveSettings() {
   }
 }
 
-function clampWorkers(value) {
-  const n = Math.round(Number(value));
-  return Number.isFinite(n) ? Math.min(8, Math.max(1, n)) : defaultSettings.concurrency;
+function syncSettingDeps() {
+  const card = settings.mode === 'card';
+  els.optLength.disabled = !card;
+  els.optLuhn.disabled = !card;
 }
 
 function bindSettings() {
-  els.optDigits.checked = settings.digitsOnly;
-  els.optPsm.value = settings.psm;
-  els.optPre.value = settings.preprocess;
-  els.optWorkers.value = clampWorkers(settings.concurrency);
+  els.optMode.value = settings.mode;
+  els.optLength.value = settings.length;
+  els.optLuhn.checked = settings.luhn;
+  els.optWorkers.value = settings.concurrency;
   els.optPerNumber.checked = settings.perNumber;
   els.optDelim.value = settings.delimiter;
+  syncSettingDeps();
 
   const on = (el, key, read) =>
     el.addEventListener('change', () => {
       settings[key] = read(el);
-      if (key === 'concurrency') el.value = settings[key];
+      if (key === 'length' || key === 'concurrency') el.value = settings[key];
+      syncSettingDeps();
       saveSettings();
     });
-  on(els.optDigits, 'digitsOnly', (el) => el.checked);
-  on(els.optPsm, 'psm', (el) => el.value);
-  on(els.optPre, 'preprocess', (el) => el.value);
-  on(els.optWorkers, 'concurrency', (el) => clampWorkers(el.value));
+  on(els.optMode, 'mode', (el) => el.value);
+  on(els.optLength, 'length', (el) => clamp(el.value, 8, 24, defaultSettings.length));
+  on(els.optLuhn, 'luhn', (el) => el.checked);
+  on(els.optWorkers, 'concurrency', (el) => clamp(el.value, 1, 4, defaultSettings.concurrency));
   on(els.optPerNumber, 'perNumber', (el) => el.checked);
   on(els.optDelim, 'delimiter', (el) => el.value);
 }
+
+const currentOpts = () => ({ mode: settings.mode, length: settings.length, luhn: settings.luhn });
 
 // --------------------------------------------------------------------- notice
 
@@ -173,11 +183,12 @@ function addFiles(entries) {
     const item = createItem(entry);
     state.items.push(item);
     fragment.append(item.ui.li);
+    queueThumbnail(item);
   }
   els.results.append(fragment);
 
   const skipped = [];
-  if (heic) skipped.push(`${heic} file HEIC/HEIF (belum didukung browser — konversi ke JPG dulu)`);
+  if (heic) skipped.push(`${heic} file HEIC/HEIF/AVIF (belum didukung — ekspor dulu ke JPG)`);
   if (notImage) skipped.push(`${notImage} file bukan gambar`);
   if (duplicate) skipped.push(`${duplicate} file ganda`);
   if (skipped.length) showNotice(`Dilewati: ${skipped.join(', ')}.`);
@@ -196,7 +207,6 @@ function createItem({ file, path, key }) {
     name: li.querySelector('.name'),
     status: li.querySelector('.status'),
     size: li.querySelector('.size'),
-    bar: li.querySelector('.row-bar'),
     numbers: li.querySelector('.numbers'),
     note: li.querySelector('.note'),
     badge: li.querySelector('.badge'),
@@ -209,12 +219,13 @@ function createItem({ file, path, key }) {
     file,
     path,
     status: 'queued', // queued | processing | done | error
-    progress: 0,
-    found: [], // [{value, confidence}] hasil OCR
-    values: [], // daftar angka yang ditampilkan/diekspor (bisa diedit)
+    opts: currentOpts(), // pengaturan saat foto ini diproses (dipakai untuk validasi)
+    found: [], // hasil server: [{value, digits, confidence, luhn, length_ok, note}]
+    values: [], // yang ditampilkan/diekspor (bisa diedit)
     confidence: null,
     edited: false,
     rawText: '',
+    passes: [],
     error: '',
     ui,
   };
@@ -232,8 +243,11 @@ function createItem({ file, path, key }) {
   ui.remove.addEventListener('click', () => removeItem(item));
   ui.numbers.addEventListener('keydown', (e) => { if (e.key === 'Enter') ui.numbers.blur(); });
   ui.numbers.addEventListener('change', () => {
-    item.values = parseManualNumbers(ui.numbers.value);
+    let values = parseManualNumbers(ui.numbers.value);
+    if (item.opts.mode === 'card') values = values.map(normalizeCardValue);
+    item.values = values;
     item.edited = true;
+    ui.numbers.value = values.join(VALUE_SEPARATOR);
     updateRow(item);
     updateSummary();
   });
@@ -244,8 +258,8 @@ function createItem({ file, path, key }) {
 
 function resetItem(item) {
   Object.assign(item, {
-    status: 'queued', progress: 0, found: [], values: [],
-    confidence: null, edited: false, rawText: '', error: '',
+    status: 'queued', found: [], values: [], confidence: null,
+    edited: false, rawText: '', passes: [], error: '',
   });
 }
 
@@ -259,7 +273,7 @@ function removeItem(item) {
 
 // ------------------------------------------------------------------- render UI
 
-const STATUS_TEXT = { queued: 'Menunggu', done: 'Selesai', error: 'Gagal' };
+const STATUS_TEXT = { queued: 'Menunggu', processing: 'Memproses…', done: 'Selesai', error: 'Gagal' };
 
 function confidenceClass(c) {
   if (c >= CONF_OK) return 'ok';
@@ -267,54 +281,86 @@ function confidenceClass(c) {
   return 'bad';
 }
 
-function updateProgress(item) {
-  const { ui } = item;
-  ui.bar.value = item.progress;
-  ui.status.textContent = `Memproses ${Math.round(item.progress * 100)}%`;
+/** Badge + catatan untuk satu baris, dihitung dari nilai yang sedang tampil (termasuk hasil edit). */
+function assess(item) {
+  const out = { badge: '', badgeClass: '', title: '', note: '', noteBad: false, valid: false, needsCheck: false };
+  if (item.status === 'error') {
+    return { ...out, note: item.error, noteBad: true, badge: 'Gagal', badgeClass: 'bad', needsCheck: true };
+  }
+  if (item.status !== 'done') return out;
+  if (!item.values.length) {
+    out.note = item.opts.mode === 'card' ? 'Nomor kartu tidak ditemukan' : 'Tidak ada angka terbaca';
+    out.needsCheck = item.opts.mode === 'card';
+    return out;
+  }
+
+  const confText = item.confidence == null ? '' : ` · keyakinan OCR ${Math.round(item.confidence)}%`;
+  if (item.opts.mode === 'card') {
+    const problems = new Set();
+    for (const value of item.values) {
+      const s = cardStatus(value, item.opts);
+      if (!s.lengthOk) problems.add(`${s.digits.length} digit (seharusnya ${item.opts.length})`);
+      else if (s.luhn === false) problems.add('checksum Luhn tidak cocok');
+    }
+    if (problems.size) {
+      return { ...out, badge: 'Periksa', badgeClass: 'warn', needsCheck: true, noteBad: true,
+        note: `Periksa: ${[...problems].join('; ')}`, title: 'Nomor ini kemungkinan ada digit yang salah baca' };
+    }
+    if (item.opts.luhn) {
+      return { ...out, badge: 'Valid', badgeClass: 'ok', valid: true,
+        title: `Panjang pas dan checksum Luhn cocok${item.edited ? '' : confText}`,
+        note: item.edited ? 'Diedit manual' : '' };
+    }
+  }
+
+  if (item.edited) return { ...out, badge: 'Diedit', note: 'Diedit manual' };
+  const shaky = item.found.filter((n) => n.confidence < CONF_WARN).map((n) => n.value);
+  return {
+    ...out,
+    badge: `${Math.round(item.confidence)}%`,
+    badgeClass: confidenceClass(item.confidence),
+    title: `Keyakinan terendah di antara angka pada foto ini`,
+    note: shaky.length ? `Periksa: ${shaky.join(', ')}` : '',
+    noteBad: shaky.length > 0,
+    needsCheck: shaky.length > 0,
+  };
 }
 
 function updateRow(item) {
   const { ui } = item;
   ui.li.dataset.status = item.status;
+  ui.status.textContent = STATUS_TEXT[item.status];
 
-  if (item.status === 'processing') updateProgress(item);
-  else ui.status.textContent = STATUS_TEXT[item.status];
-
-  const editable = item.status === 'done';
-  ui.numbers.disabled = !editable;
-  if (document.activeElement !== ui.numbers) ui.numbers.value = item.values.join(' ');
+  ui.numbers.disabled = item.status !== 'done';
+  if (document.activeElement !== ui.numbers) ui.numbers.value = item.values.join(VALUE_SEPARATOR);
 
   ui.retry.disabled = item.status === 'processing';
   ui.remove.disabled = item.status === 'processing';
   ui.retry.hidden = item.status === 'queued';
 
-  let note = '';
-  let noteBad = false;
-  let badge = '';
-  let badgeClass = '';
-  if (item.status === 'error') {
-    note = item.error;
-    noteBad = true;
-    badge = 'Gagal';
-    badgeClass = 'bad';
-  } else if (item.status === 'done') {
-    if (item.edited) {
-      note = 'Diedit manual';
-      badge = 'Diedit';
-    } else if (!item.values.length) {
-      note = 'Tidak ada angka terbaca';
-    } else {
-      badge = `${Math.round(item.confidence)}%`;
-      badgeClass = confidenceClass(item.confidence);
-      const shaky = item.found.filter((n) => n.confidence < CONF_WARN).map((n) => n.value);
-      if (shaky.length) { note = `Periksa: ${shaky.join(', ')}`; noteBad = true; }
-    }
-  }
-  ui.note.textContent = note;
-  ui.note.classList.toggle('bad', noteBad);
-  ui.badge.textContent = badge;
-  ui.badge.className = `badge ${badgeClass}`.trim();
-  ui.badge.title = badge && !item.edited ? 'Keyakinan terendah di antara angka pada foto ini' : '';
+  const a = assess(item);
+  ui.note.textContent = a.note;
+  ui.note.classList.toggle('bad', a.noteBad);
+  ui.badge.textContent = a.badge;
+  ui.badge.className = `badge ${a.badgeClass}`.trim();
+  ui.badge.title = a.title;
+}
+
+// Thumbnail dibuat satu per satu agar ratusan foto besar tidak didekode serentak (lonjakan memori).
+let thumbChain = Promise.resolve();
+
+function queueThumbnail(item) {
+  thumbChain = thumbChain
+    .then(() => (state.keys.has(item.key) ? makeThumbnail(item.file) : null))
+    .then((url) => setThumbnail(item, url))
+    .catch(() => {}); // foto rusak: biarkan placeholder; servernya yang melaporkan error
+}
+
+function setThumbnail(item, url) {
+  if (!url) return;
+  item.ui.img.src = url;
+  item.ui.img.hidden = false;
+  item.ui.ph.setAttribute('hidden', ''); // SVG tidak punya properti .hidden
 }
 
 function counts() {
@@ -333,16 +379,16 @@ function updateSummary() {
 
   const parts = [`${finished} dari ${total} foto selesai`];
   if (c.error) parts.push(`${c.error} gagal`);
-  let html = parts.join(' · ');
+  let text = parts.join(' · ');
   if (state.running) {
     let extra = state.stopRequested ? 'menghentikan…' : state.busyMessage;
     if (!extra && state.runCompleted >= 2) {
       const perItem = (performance.now() - state.runStartedAt) / state.runCompleted;
       extra = `perkiraan sisa ${formatDuration(perItem * (c.queued + c.processing))}`;
     }
-    if (extra) html += ` · ${extra}`;
+    if (extra) text += ` · ${extra}`;
   }
-  els.summaryText.textContent = html;
+  els.summaryText.textContent = text;
   els.overall.value = total ? finished / total : 0;
 
   const pending = c.queued + c.error;
@@ -357,225 +403,143 @@ function updateSummary() {
   els.copy.disabled = c.done === 0;
 }
 
-// -------------------------------------------------------------- pra-proses gambar
+// ------------------------------------------------------------------ thumbnail
 
-async function decodeImage(file) {
+async function makeThumbnail(file) {
+  const bitmap = await createImageBitmap(file);
   try {
-    return await createImageBitmap(file); // EXIF orientation diterapkan otomatis
-  } catch {
-    throw new Error('Gambar rusak atau formatnya tidak didukung browser');
-  }
-}
-
-function makeThumbnail(bitmap) {
-  const scale = THUMB_SIZE / Math.max(bitmap.width, bitmap.height);
-  const w = Math.max(1, Math.round(bitmap.width * Math.min(1, scale)));
-  const h = Math.max(1, Math.round(bitmap.height * Math.min(1, scale)));
-  const canvas = document.createElement('canvas');
-  canvas.width = w;
-  canvas.height = h;
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(0, 0, w, h);
-  ctx.drawImage(bitmap, 0, 0, w, h);
-  return canvas.toDataURL('image/jpeg', 0.7);
-}
-
-/** Ubah foto menjadi PNG siap-OCR (diskalakan + diperbaiki kontrasnya). */
-async function prepareImage(file, mode) {
-  const bitmap = await decodeImage(file);
-  try {
-    const { width, height } = fitSize(bitmap.width, bitmap.height);
+    const scale = Math.min(1, THUMB_SIZE / Math.max(bitmap.width, bitmap.height));
+    const w = Math.max(1, Math.round(bitmap.width * scale));
+    const h = Math.max(1, Math.round(bitmap.height * scale));
     const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext('2d', { willReadFrequently: mode !== 'none' });
-    ctx.fillStyle = '#fff'; // PNG transparan -> latar putih
-    ctx.fillRect(0, 0, width, height);
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(bitmap, 0, 0, width, height);
-    if (mode !== 'none') {
-      const pixels = ctx.getImageData(0, 0, width, height);
-      preprocessPixels(pixels.data, mode);
-      ctx.putImageData(pixels, 0, 0);
-    }
-    const blob = await new Promise((resolve, reject) =>
-      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Gagal menyiapkan gambar'))), 'image/png'));
-    return { blob, thumb: makeThumbnail(bitmap) };
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(bitmap, 0, 0, w, h);
+    return canvas.toDataURL('image/jpeg', 0.7);
   } finally {
     bitmap.close?.();
   }
 }
 
-// ------------------------------------------------------------------- mesin OCR
+// ----------------------------------------------------------------- server OCR
 
-function errorMessage(err) {
-  return String(err?.message ?? err ?? 'Kesalahan tidak diketahui');
-}
+const errorMessage = (err) => String(err?.message ?? err ?? 'Kesalahan tidak diketahui');
 
-async function spawnWorker(slot) {
-  slot.params = '';
-  slot.broken = false;
-  slot.worker = await Tesseract.createWorker('eng', 1, {
-    ...ASSETS,
-    logger: (m) => {
-      if (m.status === 'recognizing text' && slot.current) {
-        slot.current.progress = m.progress;
-        updateProgress(slot.current);
-      }
-    },
-  });
-}
-
-async function createSlot() {
-  const slot = { worker: null, current: null, broken: false, params: '' };
-  await spawnWorker(slot);
-  return slot;
-}
-
-async function recycleWorker(slot) {
-  const old = slot.worker;
-  slot.worker = null;
-  try { await old?.terminate(); } catch { /* sudah mati */ }
-  await spawnWorker(slot);
-}
-
-async function ensureSlots(count) {
-  while (state.slots.length > count) {
-    const slot = state.slots.pop();
-    slot.worker?.terminate().catch(() => {});
-  }
-  const missing = count - state.slots.length;
-  if (missing <= 0) return;
-
-  const settled = await Promise.allSettled(Array.from({ length: missing }, createSlot));
-  for (const r of settled) if (r.status === 'fulfilled') state.slots.push(r.value);
-  if (!state.slots.length) throw settled.find((r) => r.status === 'rejected').reason;
-  if (state.slots.length < count) {
-    showNotice(`Hanya ${state.slots.length} dari ${count} proses paralel yang berhasil dimulai (memori terbatas?).`);
-  }
-}
-
-async function applyParams(slot) {
-  const params = {
-    tessedit_pageseg_mode: settings.psm,
-    tessedit_char_whitelist: settings.digitsOnly ? DIGIT_WHITELIST : '',
-  };
-  const signature = JSON.stringify(params);
-  if (slot.params === signature) return;
-  await slot.worker.setParameters(params);
-  slot.params = signature;
-}
-
-async function processItem(slot, item) {
-  slot.current = item;
+async function checkServer() {
   try {
-    const { blob, thumb } = await prepareImage(item.file, settings.preprocess);
-    item.ui.img.src = thumb;
-    item.ui.img.hidden = false;
-    item.ui.ph.setAttribute('hidden', ''); // SVG tidak punya properti .hidden
+    const res = await fetch(API.health, { signal: AbortSignal.timeout(4000) });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
 
-    try {
-      await applyParams(slot);
-      const { data } = await slot.worker.recognize(blob, {}, { text: true, blocks: true });
-      item.rawText = data.text ?? '';
-      item.found = extractFromPage(data);
-      item.values = item.found.map((n) => n.value);
-      item.confidence = lowestConfidence(item.found);
-      item.status = 'done';
-    } catch (err) {
-      slot.broken = true; // wasm bisa crash (mis. kehabisan memori): buat ulang worker
-      throw err;
-    }
+function serverDownMessage() {
+  return location.protocol === 'file:'
+    ? 'Halaman dibuka langsung dari file. Jalankan "python server.py" lalu buka http://localhost:8080.'
+    : 'Server OCR tidak terjangkau. Pastikan "python server.py" masih berjalan, lalu coba lagi.';
+}
+
+async function recognize(item) {
+  const form = new FormData();
+  form.append('file', item.file, item.file.name);
+  form.append('mode', item.opts.mode);
+  form.append('length', String(item.opts.length));
+  form.append('luhn', item.opts.luhn ? '1' : '0');
+
+  let res;
+  try {
+    res = await fetch(API.ocr, { method: 'POST', body: form });
+  } catch {
+    throw new ServerDownError(serverDownMessage());
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Server OCR menjawab ${res.status}`);
+  }
+  return res.json();
+}
+
+async function processItem(item) {
+  item.opts = currentOpts();
+  try {
+    const data = await recognize(item);
+    item.found = data.numbers ?? [];
+    item.values = item.found.map((n) => n.value);
+    item.confidence = lowestConfidence(item.found.map((n) => n.confidence));
+    item.rawText = data.raw_text ?? '';
+    item.passes = data.passes ?? [];
+    item.status = 'done';
   } catch (err) {
-    item.status = 'error';
-    item.error = errorMessage(err);
+    if (err instanceof ServerDownError) {
+      // Bukan salah fotonya: kembalikan ke antrean dan hentikan semua proses.
+      resetItem(item);
+      state.serverDown = true;
+      state.stopRequested = true;
+    } else {
+      item.status = 'error';
+      item.error = errorMessage(err);
+    }
   } finally {
-    slot.current = null;
-    item.progress = item.status === 'done' ? 1 : 0;
-    state.runCompleted++;
+    if (item.status === 'done' || item.status === 'error') state.runCompleted++;
     updateRow(item);
     updateSummary();
   }
 }
 
-async function workerLoop(slot) {
+async function workerLoop() {
   while (!state.stopRequested) {
     const item = state.items.find((i) => i.status === 'queued');
     if (!item) return;
-    item.status = 'processing'; // klaim sebelum await agar tidak diambil worker lain
-    item.progress = 0;
+    item.status = 'processing'; // klaim sebelum await agar tidak diambil loop lain
     updateRow(item);
-    try {
-      if (slot.broken) await recycleWorker(slot);
-    } catch (err) {
-      resetItem(item);
-      updateRow(item);
-      throw err;
-    }
-    await processItem(slot, item);
+    await processItem(item);
   }
 }
 
 async function start() {
   if (state.running) return;
-  if (typeof Tesseract === 'undefined') {
-    showNotice('Pustaka OCR gagal dimuat (vendor/tesseract/tesseract.min.js). Muat ulang halaman.', 'error');
-    return;
-  }
   for (const item of state.items) if (item.status === 'error') { resetItem(item); updateRow(item); }
   if (!state.items.some((i) => i.status === 'queued')) { updateSummary(); return; }
 
   state.running = true;
   state.stopRequested = false;
+  state.serverDown = false;
   state.runStartedAt = performance.now();
   state.runCompleted = 0;
-  let fatal = false;
   hideNotice();
 
-  try {
-    state.busyMessage = 'memuat mesin OCR…';
-    updateSummary();
-    await ensureSlots(clampWorkers(settings.concurrency));
+  state.busyMessage = 'menghubungi server OCR…';
+  updateSummary();
+  if (await checkServer()) {
     state.busyMessage = '';
     updateSummary();
-
-    const results = await Promise.allSettled(state.slots.map(workerLoop));
-    const failed = results.find((r) => r.status === 'rejected');
-    if (failed) {
-      fatal = true;
-      showNotice(`Salah satu proses OCR berhenti: ${errorMessage(failed.reason)}`, 'error');
-    }
-  } catch (err) {
-    fatal = true;
-    showNotice(
-      `Mesin OCR gagal dimuat: ${errorMessage(err)}. Buka lewat server (npm start), bukan langsung dari file, ` +
-      'dan pakai browser versi terbaru.',
-      'error',
-    );
-  } finally {
-    state.running = false;
-    state.busyMessage = '';
-    for (const item of state.items) {
-      if (item.status === 'processing') { resetItem(item); updateRow(item); }
-    }
-    updateSummary();
+    await Promise.all(Array.from({ length: settings.concurrency }, workerLoop));
+  } else {
+    state.serverDown = true;
   }
 
-  // Foto yang diantrikan ulang saat proses hampir selesai.
-  if (!fatal && !state.stopRequested && state.items.some((i) => i.status === 'queued')) start();
-  else if (!fatal && !state.stopRequested && state.items.length) announceDone();
+  state.running = false;
+  state.busyMessage = '';
+  updateSummary();
+
+  if (state.serverDown) showNotice(serverDownMessage(), 'error');
+  else if (!state.stopRequested && state.items.some((i) => i.status === 'queued')) start(); // diantrikan ulang saat berjalan
+  else if (!state.stopRequested && state.items.length) announceDone();
 }
 
 function announceDone() {
   const c = counts();
-  const low = state.items.filter((i) => i.status === 'done' && !i.edited && i.values.length && i.confidence < CONF_WARN).length;
-  const empty = state.items.filter((i) => i.status === 'done' && !i.values.length).length;
+  const rows = state.items.filter((i) => i.status === 'done').map(assess);
   const bits = [`Selesai: ${c.done} foto dibaca`];
+  if (settings.mode === 'card' && settings.luhn) bits.push(`${rows.filter((r) => r.valid).length} nomor valid`);
   if (c.error) bits.push(`${c.error} gagal`);
-  if (empty) bits.push(`${empty} tanpa angka`);
-  if (low) bits.push(`${low} perlu diperiksa`);
-  showNotice(`${bits.join(', ')}.`, c.error || low || empty ? '' : 'info');
+  const check = rows.filter((r) => r.needsCheck).length;
+  if (check) bits.push(`${check} perlu diperiksa`);
+  showNotice(`${bits.join(', ')}.`, c.error || check ? '' : 'info');
 }
 
 function stop() {
@@ -587,10 +551,13 @@ function stop() {
 // ----------------------------------------------------------------------- ekspor
 
 function exportRows() {
-  const items = state.items
-    .filter((i) => i.status === 'done')
-    .map((i) => ({ name: i.path, numbers: i.values, confidence: i.edited ? null : i.confidence }));
-  return buildExportRows(items, { perNumber: settings.perNumber });
+  const done = state.items.filter((i) => i.status === 'done');
+  const items = done.map((i) => ({
+    name: i.path,
+    numbers: i.values.map((value) => ({ value, luhn: cardStatus(value, i.opts).luhn })),
+    confidence: i.edited ? null : i.confidence,
+  }));
+  return buildExportRows(items, { perNumber: settings.perNumber, card: done.every((i) => i.opts.mode === 'card') });
 }
 
 function timestamp() {
@@ -634,7 +601,9 @@ function openViewer(item) {
   viewerUrl = URL.createObjectURL(item.file);
   els.viewerName.textContent = item.path;
   els.viewerImg.src = viewerUrl;
-  els.viewerRaw.textContent = item.rawText.trim() || (item.status === 'done' ? '(kosong)' : '(belum diproses)');
+  const raw = item.rawText.trim() || (item.status === 'done' ? '(kosong)' : '(belum diproses)');
+  const tried = item.passes.length > 1 ? `Percobaan: ${item.passes.join(' → ')}\n\n` : '';
+  els.viewerRaw.textContent = tried + raw;
   els.viewer.showModal();
 }
 
@@ -712,7 +681,7 @@ function bindInputs() {
 
   window.addEventListener('paste', (e) => {
     const files = [...(e.clipboardData?.files ?? [])];
-    if (!files.length) return; // tempel teks ke kolom angka tetap normal
+    if (!files.length) return; // tempel teks ke kolom nomor tetap normal
     e.preventDefault();
     addFiles(files.map((file) => {
       const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
@@ -730,7 +699,7 @@ function bindActions() {
   els.copy.addEventListener('click', copyTSV);
 
   els.redo.addEventListener('click', () => {
-    if (state.items.some((i) => i.edited) && !confirm('Angka yang sudah Anda edit manual akan tertimpa. Lanjutkan?')) return;
+    if (state.items.some((i) => i.edited) && !confirm('Nomor yang sudah Anda edit manual akan tertimpa. Lanjutkan?')) return;
     for (const item of state.items) if (item.status !== 'processing') { resetItem(item); updateRow(item); }
     start();
   });
@@ -753,7 +722,4 @@ bindSettings();
 bindInputs();
 bindActions();
 updateSummary();
-
-if (location.protocol === 'file:') {
-  showNotice('Halaman ini dibuka langsung dari file sehingga mesin OCR tidak bisa berjalan. Jalankan "npm start" lalu buka http://localhost:8080.', 'error');
-}
+checkServer().then((ok) => { if (!ok) showNotice(serverDownMessage(), 'error'); });

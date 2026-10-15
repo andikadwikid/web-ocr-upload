@@ -1,65 +1,62 @@
 // Fungsi murni (tanpa DOM) supaya bisa dipakai di browser dan diuji di Node.
 
-/**
- * Pola angka: bilangan bulat/desimal, boleh diawali "-" dan boleh memakai
- * pemisah ribuan/desimal "." atau ",". Tanda "-" hanya dianggap negatif bila
- * tidak menempel pada angka sebelumnya (jadi "0812-3456" -> "0812", "3456").
- */
-const NUMBER_RE = /(?<![\d.,])-?\d+(?:[.,]\d+)*/g;
+// ---------- Nomor kartu ----------
 
-/** Ambil semua angka dari sebuah teks. */
-export function extractNumbers(text) {
-  if (!text) return [];
-  return text.match(NUMBER_RE) ?? [];
-}
-
-/**
- * Ambil angka beserta tingkat keyakinan (0-100) dari hasil Tesseract.
- * Memakai kata (word) bila tersedia supaya tiap angka punya confidence sendiri;
- * kalau tidak, jatuh kembali ke teks utuh dengan confidence halaman.
- */
-export function extractFromPage(page) {
-  const found = [];
-  const words = [];
-  for (const block of page?.blocks ?? []) {
-    for (const para of block.paragraphs ?? []) {
-      for (const line of para.lines ?? []) {
-        for (const word of line.words ?? []) words.push(word);
-      }
+/** Checksum Luhn (ISO/IEC 7812) untuk string digit. */
+export function luhnValid(digits) {
+  if (!/^\d+$/.test(digits)) return false;
+  let total = 0;
+  for (let i = 0; i < digits.length; i++) {
+    let d = Number(digits[digits.length - 1 - i]);
+    if (i % 2 === 1) {
+      d *= 2;
+      if (d > 9) d -= 9;
     }
+    total += d;
   }
-  if (words.length) {
-    for (const word of words) {
-      for (const value of extractNumbers(word.text)) {
-        found.push({ value, confidence: clampConfidence(word.confidence) });
-      }
-    }
-  } else {
-    const confidence = clampConfidence(page?.confidence);
-    for (const value of extractNumbers(page?.text)) found.push({ value, confidence });
-  }
-  return found;
+  return total % 10 === 0;
 }
 
-function clampConfidence(value) {
-  return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
+/** '6032981234567899' -> '6032 9812 3456 7899'. */
+export function groupDigits(digits, size = 4) {
+  return digits.match(new RegExp(`\\d{1,${size}}`, 'g'))?.join(' ') ?? '';
 }
 
 /**
- * Confidence terendah dari daftar angka; null bila kosong. Dipakai (bukan rata-rata)
- * karena satu angka yang salah sudah merusak data, jadi baris itu harus ditandai.
+ * Rapikan isian nomor kartu: bila isinya hanya digit/spasi/strip, kelompokkan 4-4-4-4.
+ * Teks lain dibiarkan apa adanya.
  */
-export function lowestConfidence(numbers) {
-  if (!numbers.length) return null;
-  return Math.min(...numbers.map((n) => n.confidence));
+export function normalizeCardValue(value) {
+  const v = value.trim();
+  return /^[\d\s-]+$/.test(v) ? groupDigits(v.replace(/\D/g, '')) : v;
 }
 
-/** Pecah isian manual pengguna menjadi daftar angka (dipisah spasi/titik koma). */
+/**
+ * Status validasi satu nilai.
+ * @returns {{digits:string, lengthOk:boolean|null, luhn:boolean|null}}
+ *   null = tidak berlaku (mode 'semua angka' / Luhn dimatikan).
+ */
+export function cardStatus(value, { mode, length, luhn }) {
+  if (mode !== 'card') return { digits: value, lengthOk: null, luhn: null };
+  const digits = value.replace(/\D/g, '');
+  const lengthOk = digits.length === length;
+  return { digits, lengthOk, luhn: luhn && lengthOk ? luhnValid(digits) : null };
+}
+
+/** Pecah isian manual pengguna: dipisah titik koma, | atau baris baru (spasi dipakai di dalam nomor kartu). */
 export function parseManualNumbers(input) {
   return input
-    .split(/[\s;]+/)
+    .split(/[;|\n]+/)
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+/**
+ * Confidence terendah (0-100) dari daftar; null bila kosong. Dipakai (bukan rata-rata)
+ * karena satu angka yang salah sudah merusak data, jadi baris itu harus ditandai.
+ */
+export function lowestConfidence(confidences) {
+  return confidences.length ? Math.min(...confidences) : null;
 }
 
 // ---------- Ekspor ----------
@@ -74,24 +71,33 @@ export function csvCell(value, delimiter = ',') {
   return s.includes(delimiter) || /["\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
+const luhnText = (flag) => (flag === true ? 'valid' : flag === false ? 'tidak_valid' : '');
+
 /**
  * Susun baris ekspor dari daftar hasil.
- * @param {{name:string, numbers:string[], confidence:number|null}[]} items
- * @param {{perNumber:boolean}} opts  true = satu baris per angka
+ * @param {{name:string, numbers:{value:string, luhn:boolean|null}[], confidence:number|null}[]} items
+ * @param {{perNumber?:boolean, card?:boolean}} opts  perNumber: satu baris per angka; card: kolom bernama nomor_kartu
  */
-export function buildExportRows(items, { perNumber = false } = {}) {
-  const confText = (c) => (c == null ? '' : String(Math.round(c)));
+export function buildExportRows(items, { perNumber = false, card = false } = {}) {
+  const label = card ? 'nomor_kartu' : 'angka';
+  const conf = (c) => (c == null ? '' : String(Math.round(c)));
   if (perNumber) {
-    const rows = [['nama_file', 'urutan', 'angka', 'keyakinan_persen']];
+    const rows = [['nama_file', 'urutan', label, 'keyakinan_persen', 'luhn']];
     for (const it of items) {
-      if (!it.numbers.length) rows.push([it.name, '', '', confText(it.confidence)]);
-      it.numbers.forEach((n, i) => rows.push([it.name, String(i + 1), n, confText(it.confidence)]));
+      if (!it.numbers.length) rows.push([it.name, '', '', conf(it.confidence), '']);
+      it.numbers.forEach((n, i) =>
+        rows.push([it.name, String(i + 1), n.value, conf(it.confidence), luhnText(n.luhn)]));
     }
     return rows;
   }
-  const rows = [['nama_file', 'angka', 'jumlah_angka', 'keyakinan_persen']];
+  const rows = [['nama_file', label, 'jumlah', 'keyakinan_persen', 'luhn']];
   for (const it of items) {
-    rows.push([it.name, it.numbers.join(' | '), String(it.numbers.length), confText(it.confidence)]);
+    const flags = it.numbers.map((n) => n.luhn);
+    let overall = null;
+    if (flags.includes(false)) overall = false;
+    else if (flags.length && flags.every((f) => f === true)) overall = true;
+    rows.push([it.name, it.numbers.map((n) => n.value).join(' | '), String(it.numbers.length),
+      conf(it.confidence), luhnText(overall)]);
   }
   return rows;
 }
@@ -103,7 +109,7 @@ export function buildExportRows(items, { perNumber = false } = {}) {
  */
 export function toCSV(rows, delimiter = ',') {
   // Hanya kolom nama file (indeks 0) yang dinetralkan: kolom angka berasal dari
-  // regex angka (atau ketikan pengguna) sehingga "-12" harus tetap utuh.
+  // OCR (atau ketikan pengguna) sehingga "-12" harus tetap utuh.
   const body = rows.map((row, r) =>
     row
       .map((cell, c) => csvCell(r > 0 && c === 0 ? neutralizeFormula(String(cell)) : cell, delimiter))
@@ -117,99 +123,7 @@ export function toTSV(rows) {
   return rows.map((row) => row.map(clean).join('\t')).join('\n');
 }
 
-// ---------- Gambar ----------
-
-/**
- * Ukuran target untuk OCR: perkecil foto yang terlalu besar (lambat) dan
- * perbesar gambar kecil (OCR butuh tinggi huruf yang cukup).
- */
-export function fitSize(width, height, { maxLong = 2400, minLong = 900, maxUpscale = 3 } = {}) {
-  const long = Math.max(width, height);
-  let scale = 1;
-  if (long > maxLong) scale = maxLong / long;
-  else if (long < minLong) scale = Math.min(maxUpscale, minLong / long);
-  return {
-    width: Math.max(1, Math.round(width * scale)),
-    height: Math.max(1, Math.round(height * scale)),
-    scale,
-  };
-}
-
-/** Ambang Otsu dari histogram 256 level. */
-export function otsuThreshold(hist, total) {
-  let sum = 0;
-  for (let i = 0; i < 256; i++) sum += i * hist[i];
-  let sumB = 0;
-  let wB = 0;
-  let best = 0;
-  let threshold = 127;
-  for (let t = 0; t < 256; t++) {
-    wB += hist[t];
-    if (wB === 0) continue;
-    const wF = total - wB;
-    if (wF === 0) break;
-    sumB += t * hist[t];
-    const mB = sumB / wB;
-    const mF = (sum - sumB) / wF;
-    const between = wB * wF * (mB - mF) ** 2;
-    if (between > best) {
-      best = between;
-      threshold = t;
-    }
-  }
-  return threshold;
-}
-
-/**
- * Pra-proses piksel RGBA di tempat.
- * mode 'auto' : grayscale + regangkan kontras (persentil 1%-99%) + balik warna
- *               bila latar gelap (teks terang di latar gelap).
- * mode 'bw'   : seperti 'auto' lalu binarisasi Otsu (hitam-putih).
- * mode 'none' : tidak diubah.
- */
-export function preprocessPixels(data, mode) {
-  if (mode === 'none') return;
-  const n = data.length / 4;
-  const gray = new Uint8ClampedArray(n);
-  const hist = new Uint32Array(256);
-  let sum = 0;
-  for (let i = 0, p = 0; i < n; i++, p += 4) {
-    const g = (data[p] * 299 + data[p + 1] * 587 + data[p + 2] * 114) / 1000;
-    gray[i] = g;
-    hist[gray[i]]++;
-    sum += gray[i];
-  }
-
-  // Regangkan kontras berdasarkan persentil 1% dan 99%.
-  const cut = n * 0.01;
-  let lo = 0;
-  let hi = 255;
-  for (let acc = 0; lo < 255; lo++) { acc += hist[lo]; if (acc > cut) break; }
-  for (let acc = 0; hi > 0; hi--) { acc += hist[hi]; if (acc > cut) break; }
-  const range = Math.max(1, hi - lo);
-  const stretched = new Uint8ClampedArray(n);
-  const hist2 = new Uint32Array(256);
-  let sum2 = 0;
-  for (let i = 0; i < n; i++) {
-    const v = ((gray[i] - lo) * 255) / range;
-    stretched[i] = v;
-    hist2[stretched[i]]++;
-    sum2 += stretched[i];
-  }
-
-  const invert = sum2 / n < 110; // latar gelap -> balik
-  const threshold = mode === 'bw' ? otsuThreshold(hist2, n) : -1;
-  for (let i = 0, p = 0; i < n; i++, p += 4) {
-    let v = stretched[i];
-    if (threshold >= 0) v = v > threshold ? 255 : 0;
-    if (invert) v = 255 - v;
-    data[p] = data[p + 1] = data[p + 2] = v;
-    data[p + 3] = 255;
-  }
-  return { invert, mean: sum / n };
-}
-
-// ---------- Format tampilan ----------
+// ---------- Format tampilan & file ----------
 
 export function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
@@ -228,12 +142,12 @@ export function fileKey(file) {
   return `${file.name}|${file.size}|${file.lastModified}`;
 }
 
-const IMAGE_EXT = /\.(jpe?g|png|webp|bmp|gif|avif|tiff?)$/i;
-const UNSUPPORTED_EXT = /\.(heic|heif)$/i;
+const IMAGE_EXT = /\.(jpe?g|png|webp|bmp|gif|tiff?)$/i;
+const UNSUPPORTED_EXT = /\.(heic|heif|avif)$/i;
 
 /** 'ok' | 'unsupported' (HEIC dsb.) | 'skip' (bukan gambar). */
 export function classifyFile(file) {
-  if (UNSUPPORTED_EXT.test(file.name) || /heic|heif/i.test(file.type)) return 'unsupported';
+  if (UNSUPPORTED_EXT.test(file.name) || /heic|heif|avif/i.test(file.type)) return 'unsupported';
   if (file.type.startsWith('image/') || IMAGE_EXT.test(file.name)) return 'ok';
   return 'skip';
 }
