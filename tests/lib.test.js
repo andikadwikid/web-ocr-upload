@@ -4,6 +4,7 @@ import {
   buildExportRows,
   cardStatus,
   classifyFile,
+  createConfirmer,
   groupDigits,
   lowestConfidence,
   luhnValid,
@@ -110,4 +111,35 @@ test('classifyFile', () => {
   assert.equal(classifyFile({ name: 'a.heic', type: 'image/heic' }), 'unsupported');
   assert.equal(classifyFile({ name: 'a.txt', type: 'text/plain' }), 'skip');
   assert.equal(classifyFile({ name: '.DS_Store', type: '' }), 'skip');
+});
+
+test('createConfirmer: terkonfirmasi tepat sekali setelah N frame berurutan', () => {
+  const c = createConfirmer(2);
+  assert.deepEqual(c.push(['A']), []);
+  assert.deepEqual(c.push(['A']), ['A']);
+  assert.deepEqual(c.push(['A']), []); // sudah terkonfirmasi, tidak diulang selama masih terlihat
+  assert.deepEqual(c.push(['A']), []);
+});
+
+test('createConfirmer: frame yang meleset mengulang hitungan', () => {
+  const c = createConfirmer(2);
+  assert.deepEqual(c.push(['A']), []);
+  assert.deepEqual(c.push([]), []); // kartu hilang sesaat
+  assert.deepEqual(c.push(['A']), []); // mulai dari awal
+  assert.deepEqual(c.push(['A']), ['A']);
+});
+
+test('createConfirmer: bacaan berbeda tidak saling mengonfirmasi, banyak nomor sekaligus', () => {
+  const c = createConfirmer(2);
+  assert.deepEqual(c.push(['A']), []);
+  assert.deepEqual(c.push(['B']), []); // A -> B: tidak ada yang berurutan
+  assert.deepEqual(c.push(['B', 'C']), ['B']);
+  assert.deepEqual(c.push(['B', 'C']), ['C']);
+  assert.deepEqual(c.push(['C', 'C']), []); // duplikat dalam satu frame dihitung sekali
+  c.reset();
+  assert.deepEqual(c.push(['C']), []);
+});
+
+test('createConfirmer: required=1 langsung menerima', () => {
+  assert.deepEqual(createConfirmer(1).push(['X']), ['X']);
 });

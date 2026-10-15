@@ -24,6 +24,7 @@
         <div class="dz-actions">
           <button id="pick-files" type="button" class="btn btn-primary">Pilih foto</button>
           <button id="pick-folder" type="button" class="btn">Pilih folder</button>
+          <button id="scan-open" type="button" class="btn">Scan webcam</button>
         </div>
         <p class="dz-hint">atau tempel dari clipboard (Ctrl+V) &middot; JPG, PNG, WebP, BMP, GIF</p>
         <input id="file-input" type="file" accept="image/*" multiple hidden>
@@ -120,6 +121,40 @@
         </details>
       </div>
     </form>
+  </dialog>
+
+  <dialog id="scanner" class="scanner" aria-labelledby="scan-title">
+    <div class="scanner-inner">
+      <header class="viewer-head">
+        <strong id="scan-title">Scan nomor kartu dengan webcam</strong>
+        <button id="scan-close" type="button" class="btn btn-icon" aria-label="Tutup">&times;</button>
+      </header>
+
+      <div class="scanner-stage">
+        <video id="scan-video" playsinline muted autoplay></video>
+        <div class="scan-guide" aria-hidden="true"></div>
+        <div id="scan-flash" class="scan-flash" aria-hidden="true"></div>
+      </div>
+
+      <p id="scan-status" class="scan-status" role="status" aria-live="polite">Mengaktifkan kamera…</p>
+
+      <div class="scanner-controls">
+        <label class="inline-check"><input type="checkbox" id="scan-auto" checked> Pindai otomatis</label>
+        <select id="scan-camera" aria-label="Pilih kamera" hidden></select>
+        <button id="scan-snap" type="button" class="btn">Ambil foto</button>
+        <button id="scan-done" type="button" class="btn btn-primary">Selesai</button>
+      </div>
+
+      <p class="scan-tip">Letakkan <strong>seluruh kartu</strong> memenuhi bingkai putus-putus (nomor boleh di mana saja pada kartu),
+        tahan stabil, dan hindari pantulan lampu. Nomor baru yang terbaca valid pada dua frame berturut-turut
+        ditambahkan ke daftar otomatis; ganti ke kartu berikutnya. Bila gagal, tekan <strong>Ambil foto</strong>.</p>
+      <div class="scan-export">
+        <span id="scan-count" class="scan-count" aria-live="polite">Belum ada hasil</span>
+        <button id="scan-download" type="button" class="btn">Unduh CSV</button>
+        <button id="scan-copy" type="button" class="btn">Salin ke Excel</button>
+      </div>
+      <ol id="scan-found" class="scan-found" aria-label="Nomor yang sudah terbaca"></ol>
+    </div>
   </dialog>
 
   <template id="row-tpl">

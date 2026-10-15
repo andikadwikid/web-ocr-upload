@@ -77,6 +77,12 @@ class EngineTest(unittest.TestCase):
         self.assertIs(result.numbers[0]["luhn"], False)
         self.assertGreater(len(result.passes), 1)  # sudah mencoba variasi lain
 
+    def test_max_passes_limits_retries(self):
+        number = luhn_number(5, valid=False)
+        result = self.engine.read(make_card_jpeg(number), max_passes=1)
+        self.assertEqual(result.passes, ["asli"])
+        self.assertEqual(result.numbers[0]["digits"], number)
+
     def test_luhn_check_can_be_disabled(self):
         number = luhn_number(5, valid=False)
         result = self.engine.read(make_card_jpeg(number), check_luhn=False)

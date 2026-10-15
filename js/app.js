@@ -11,6 +11,7 @@ import {
   toCSV,
   toTSV,
 } from './lib.js';
+import { createScanner } from './scanner.js';
 
 // ---------------------------------------------------------------- konfigurasi
 
@@ -41,6 +42,10 @@ const els = {
   folderInput: $('folder-input'),
   pickFiles: $('pick-files'),
   pickFolder: $('pick-folder'),
+  scanOpen: $('scan-open'),
+  scanCount: $('scan-count'),
+  scanDownload: $('scan-download'),
+  scanCopy: $('scan-copy'),
   notice: $('notice'),
   toolbar: $('toolbar'),
   summaryText: $('summary-text'),
@@ -79,6 +84,7 @@ const state = {
   runCompleted: 0,
   nextId: 1,
   pasteCount: 0,
+  scanCount: 0,
 };
 
 // ----------------------------------------------------------------- pengaturan
@@ -401,6 +407,11 @@ function updateSummary() {
   els.clear.disabled = state.running;
   els.download.disabled = c.done === 0;
   els.copy.disabled = c.done === 0;
+
+  // Salinan kontrol ekspor di dalam dialog scan (dialog modal menutupi toolbar utama).
+  els.scanCount.textContent = c.done ? `${c.done} hasil tersimpan di daftar` : 'Belum ada hasil';
+  els.scanDownload.disabled = c.done === 0;
+  els.scanCopy.disabled = c.done === 0;
 }
 
 // ------------------------------------------------------------------ thumbnail
@@ -443,12 +454,14 @@ function serverDownMessage() {
     : 'Server OCR tidak terjangkau. Pastikan "python server.py" masih berjalan, lalu coba lagi.';
 }
 
-async function recognize(item) {
+/** Kirim satu gambar ke server OCR. `passes` membatasi percobaan variasi (frame webcam = 1). */
+async function postOcr(file, opts, { passes } = {}) {
   const form = new FormData();
-  form.append('file', item.file, item.file.name);
-  form.append('mode', item.opts.mode);
-  form.append('length', String(item.opts.length));
-  form.append('luhn', item.opts.luhn ? '1' : '0');
+  form.append('file', file, file.name || 'frame.jpg');
+  form.append('mode', opts.mode);
+  form.append('length', String(opts.length));
+  form.append('luhn', opts.luhn ? '1' : '0');
+  if (passes) form.append('passes', String(passes));
 
   let res;
   try {
@@ -463,16 +476,19 @@ async function recognize(item) {
   return res.json();
 }
 
+function applyResult(item, data, numbers = data.numbers ?? []) {
+  item.found = numbers;
+  item.values = numbers.map((n) => n.value);
+  item.confidence = lowestConfidence(numbers.map((n) => n.confidence));
+  item.rawText = data.raw_text ?? '';
+  item.passes = data.passes ?? [];
+  item.status = 'done';
+}
+
 async function processItem(item) {
   item.opts = currentOpts();
   try {
-    const data = await recognize(item);
-    item.found = data.numbers ?? [];
-    item.values = item.found.map((n) => n.value);
-    item.confidence = lowestConfidence(item.found.map((n) => n.confidence));
-    item.rawText = data.raw_text ?? '';
-    item.passes = data.passes ?? [];
-    item.status = 'done';
+    applyResult(item, await postOcr(item.file, item.opts));
   } catch (err) {
     if (err instanceof ServerDownError) {
       // Bukan salah fotonya: kembalikan ke antrean dan hentikan semua proses.
@@ -576,7 +592,8 @@ function downloadCSV() {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-async function copyTSV() {
+/** `report(pesan, jenis)`: tempat menampilkan hasil; default notifikasi halaman (tidak terlihat di balik dialog modal). */
+async function copyTSV(report = (message, kind) => showNotice(message, kind === 'ok' ? 'info' : kind, 4000)) {
   const rows = exportRows();
   const text = toTSV(rows);
   try {
@@ -584,13 +601,14 @@ async function copyTSV() {
   } catch {
     const ta = Object.assign(document.createElement('textarea'), { value: text });
     ta.style.cssText = 'position:fixed;opacity:0';
-    document.body.append(ta);
+    // Di dalam dialog modal, elemen di luar dialog bersifat inert sehingga tidak bisa dipilih.
+    (document.querySelector('dialog[open]') ?? document.body).append(ta);
     ta.select();
     const ok = document.execCommand('copy');
     ta.remove();
-    if (!ok) { showNotice('Gagal menyalin ke clipboard. Gunakan tombol Unduh CSV.', 'error'); return; }
+    if (!ok) { report('Gagal menyalin ke clipboard. Gunakan tombol Unduh CSV.', 'error'); return; }
   }
-  showNotice(`${rows.length - 1} baris disalin. Tempel langsung di Excel atau Google Sheets.`, 'info', 4000);
+  report(`${rows.length - 1} baris disalin. Tempel langsung di Excel atau Google Sheets.`, 'ok');
 }
 
 // ----------------------------------------------------------------------- viewer
@@ -696,7 +714,7 @@ function bindActions() {
   els.start.addEventListener('click', start);
   els.stop.addEventListener('click', stop);
   els.download.addEventListener('click', downloadCSV);
-  els.copy.addEventListener('click', copyTSV);
+  els.copy.addEventListener('click', () => copyTSV());
 
   els.redo.addEventListener('click', () => {
     if (state.items.some((i) => i.edited) && !confirm('Nomor yang sudah Anda edit manual akan tertimpa. Lanjutkan?')) return;
@@ -717,6 +735,60 @@ function bindActions() {
     if (state.items.some((i) => i.status === 'done')) e.preventDefault();
   });
 }
+
+// ------------------------------------------------------------------ scan webcam
+
+const digitsOf = (value) => value.replace(/\D/g, '');
+
+function webcamFile(blob) {
+  return new File([blob], `webcam-${String(++state.scanCount).padStart(3, '0')}.jpg`,
+    { type: 'image/jpeg', lastModified: Date.now() });
+}
+
+/** Nomor yang sudah terkonfirmasi di pemindai langsung masuk daftar sebagai hasil jadi (tanpa OCR ulang). */
+function addScannedItem(blob, data, number) {
+  const file = webcamFile(blob);
+  const item = createItem({ file, path: file.name, key: `${file.name}|${file.size}|${file.lastModified}` });
+  state.keys.add(item.key);
+  state.items.push(item);
+  els.results.append(item.ui.li);
+  item.opts = currentOpts();
+  applyResult(item, data, [number]);
+  updateRow(item);
+  queueThumbnail(item);
+  hideNotice();
+  updateSummary();
+}
+
+const scanner = createScanner({
+  ui: {
+    dialog: $('scanner'),
+    video: $('scan-video'),
+    status: $('scan-status'),
+    flash: $('scan-flash'),
+    auto: $('scan-auto'),
+    camera: $('scan-camera'),
+    snap: $('scan-snap'),
+    done: $('scan-done'),
+    close: $('scan-close'),
+    found: $('scan-found'),
+  },
+  recognizeFrame: (blob) => postOcr(blob, currentOpts(), { passes: 1 }), // cepat: frame berikutnya = kesempatan baru
+  onConfirmed: addScannedItem,
+  onSnap: (blob) => {
+    const file = webcamFile(blob);
+    addFiles([{ file, path: file.name }]);
+    start(); // foto manual diproses seperti unggahan biasa (semua percobaan variasi)
+  },
+  isDuplicate: (digits) => state.items.some((i) => i.values.some((v) => digitsOf(v) === digits)),
+  autoAllowed: () => settings.mode === 'card',
+});
+els.scanOpen.addEventListener('click', () => scanner.open());
+els.scanDownload.addEventListener('click', () => {
+  downloadCSV();
+  scanner.say('CSV diunduh.', 'ok');
+});
+els.scanCopy.addEventListener('click', () => copyTSV((message, kind) => scanner.say(message, kind)));
 
 bindSettings();
 bindInputs();

@@ -230,6 +230,33 @@ progress::-moz-progress-bar { background: var(--accent); }
 .viewer-body img { max-width: 100%; max-height: 62vh; display: block; margin: 0 auto 12px; border-radius: 8px; }
 .viewer-body pre { white-space: pre-wrap; word-break: break-word; background: var(--surface-2); padding: 10px; border-radius: 8px; font-family: var(--mono); font-size: .85rem; }
 
+/* ---------- Scan webcam ---------- */
+.scanner { border: 0; padding: 0; border-radius: var(--radius); background: var(--surface); color: var(--text); width: min(94vw, 760px); max-height: 94vh; }
+.scanner::backdrop { background: rgb(0 0 0 / 60%); }
+.scanner-inner { display: flex; flex-direction: column; max-height: 94vh; overflow: auto; }
+.scanner-stage { position: relative; background: #000; aspect-ratio: 16 / 9; }
+.scanner-stage video { width: 100%; height: 100%; object-fit: contain; display: block; } /* tidak dicermin: angka harus terbaca normal */
+.scan-guide {
+  position: absolute; inset: 22% 8%; border: 2px dashed rgb(255 255 255 / 70%); border-radius: 12px;
+  pointer-events: none; box-shadow: 0 0 0 9999px rgb(0 0 0 / 22%);
+}
+.scan-flash { position: absolute; inset: 0; background: rgb(34 197 94 / 55%); opacity: 0; pointer-events: none; }
+.scan-flash.on { animation: scan-flash .6s ease-out; }
+@keyframes scan-flash { from { opacity: 1; } to { opacity: 0; } }
+.scan-status { margin: 0; padding: 10px 14px; font-weight: 600; min-height: 3em; background: var(--surface-2); }
+.scan-status[data-kind="ok"] { color: var(--ok); background: var(--ok-bg); }
+.scan-status[data-kind="warn"] { color: var(--warn); background: var(--warn-bg); }
+.scan-status[data-kind="error"] { color: var(--bad); background: var(--bad-bg); }
+.scanner-controls { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; padding: 12px 14px; }
+.scanner-controls select { max-width: 100%; }
+.scanner-controls .btn-primary { margin-left: auto; }
+.scan-tip { margin: 0; padding: 0 14px 10px; color: var(--muted); font-size: .85rem; }
+.scan-export { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; padding: 0 14px 10px; }
+.scan-count { margin-right: auto; font-weight: 600; font-variant-numeric: tabular-nums; }
+.scan-found { list-style: none; margin: 0; padding: 0 14px 14px; display: flex; flex-direction: column; gap: 6px; }
+.scan-found:empty { display: none; }
+.scan-found li { font-family: var(--mono); background: var(--ok-bg); color: var(--ok); border-radius: 8px; padding: 6px 10px; }
+
 .footer { margin-top: 36px; color: var(--muted); font-size: .8rem; text-align: center; }
 
 /* ---------- Layar kecil ---------- */

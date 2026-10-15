@@ -49,6 +49,34 @@ Buka <http://localhost:8080>. Untuk berhenti: `docker compose down`.
 Nomor ditulis berspasi (`6032 9812 3456 7899`) dengan sengaja: Excel membaca 16 digit tanpa spasi sebagai angka
 dan memotongnya menjadi 15 digit signifikan, sedangkan yang berspasi tetap utuh sebagai teks.
 
+### Scan lewat webcam
+
+Klik **Scan webcam**, izinkan kamera, lalu tunjukkan kartu satu per satu.
+
+- Frame dikirim ke server sekitar tiap 1 detik (mode cepat: satu percobaan per frame). Sebuah nomor ditambahkan ke daftar
+  setelah terbaca **valid pada dua frame berturut-turut** (panjang pas dan lolos Luhn), lengkap dengan bunyi/kilatan hijau.
+  Lalu ganti ke kartu berikutnya; nomor yang sudah ada di daftar tidak ditambahkan lagi.
+- Setiap nomor yang terkonfirmasi **otomatis tersimpan di daftar hasil** (satu baris per kartu, bernama `webcam-001.jpg`,
+  dst., dengan foto frame-nya). Tombol **Unduh CSV** dan **Salin ke Excel** ada langsung di dialog scan, jadi Anda bisa
+  memindai lalu mengekspor tanpa menutup kamera; isinya seluruh daftar, termasuk foto yang diunggah sebelumnya.
+- Nomor yang panjangnya pas tetapi checksum-nya salah **tidak** ditambahkan otomatis; dialog memberi tahu agar kartu
+  ditahan lebih stabil / silau dikurangi. Bila Luhn dimatikan di pengaturan, syaratnya dua bacaan yang identik.
+- **Ambil foto** adalah cadangan: frame saat itu diproses seperti foto unggahan (semua percobaan variasi), dan bila belum
+  valid akan muncul sebagai baris "Periksa" yang bisa Anda koreksi.
+- Pindai otomatis hanya untuk mode **Nomor kartu**. Beberapa kamera? Pilih dari daftar di dialog.
+- Kamera hanya bisa dipakai lewat **`http://localhost` atau HTTPS**. Membuka lewat `http://192.168.x.x` dari HP/komputer
+  lain diblokir browser (bukan oleh aplikasi ini); untuk itu pakai HTTPS.
+- Hanya frame saat nomor terkonfirmasi (dan foto manual) yang masuk daftar; frame lain dibuang. Semua frame hanya dikirim
+  ke server di komputer Anda.
+
+Tips: letakkan **seluruh kartu** di dalam bingkai putus-putus (nomor boleh di mana saja pada kartu), tahan stabil, beri
+cahaya cukup, dan miringkan sedikit bila ada pantulan lampu. Dalam simulasi bingkai webcam 1280×720 dari foto kartu,
+nomor terbaca dengan satu percobaan selama kartu mengisi lebih dari sekitar sepertiga lebar bingkai; pada ±28% mode
+cepat gagal (Ambil foto masih berhasil). Itu simulasi dari gambar yang bersih, webcam sungguhan lebih berderau dan
+buram, jadi dekatkan kartu lebih dari angka itu.
+
+Fitur ini diuji dengan kamera virtual (video berisi kartu), belum dengan webcam fisik.
+
 ### Pengaturan
 
 | Pengaturan | Keterangan |
@@ -105,7 +133,8 @@ Batasannya perlu dipahami:
 
 ```
 GET  /api/health
-POST /api/ocr    multipart: file, mode=card|any (default card), length=8..24 (default 16), luhn=1|0
+POST /api/ocr    multipart: file, mode=card|any (default card), length=8..24 (default 16), luhn=1|0,
+                 passes=1..5 (opsional: batasi percobaan variasi; 1 dipakai untuk frame webcam)
 → { "numbers": [{"value": "6032 9812 3456 7899", "digits": "...", "confidence": 84.9,
                  "luhn": true, "length_ok": true, "note": ""}],
     "raw_text": "...", "passes": ["asli"], "best_pass": "asli", "elapsed_ms": 910 }
@@ -118,7 +147,7 @@ server.py           Flask + waitress: menyajikan halaman dan /api/ocr
 requirements.txt    dependensi Python
 ocr/cardnum.py      ekstraksi nomor kartu & Luhn (murni, mudah diuji)
 ocr/engine.py       RapidOCR + percobaan ulang bervariasi
-index.html css/ js/ antarmuka web (JS biasa, tanpa build)
+index.html css/ js/ antarmuka web (JS biasa, tanpa build); js/scanner.js = scan webcam
 tests/              unit test Python (unittest) dan JavaScript (node --test)
 ```
 

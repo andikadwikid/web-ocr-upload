@@ -2,7 +2,7 @@
 
 Menyajikan halaman (index.html, css/, js/) dan API OCR:
   GET  /api/health
-  POST /api/ocr   multipart: file, mode=card|any, length=16, luhn=1|0
+  POST /api/ocr   multipart: file, mode=card|any, length=16, luhn=1|0, passes=1..5 (opsional)
 """
 
 from __future__ import annotations
@@ -76,11 +76,20 @@ def create_app(engine_factory=None) -> Flask:
         if not LENGTH_RANGE[0] <= length <= LENGTH_RANGE[1]:
             return jsonify(error=f"length harus {LENGTH_RANGE[0]}-{LENGTH_RANGE[1]}"), 400
         check_luhn = request.form.get("luhn", "1") != "0"
+        max_passes = None
+        if request.form.get("passes"):
+            try:
+                max_passes = int(request.form["passes"])
+            except ValueError:
+                return jsonify(error="passes harus berupa bilangan bulat"), 400
+            if not 1 <= max_passes <= 5:
+                return jsonify(error="passes harus 1-5"), 400
 
         from ocr.engine import ImageError  # ringan: engine.py baru memuat OCR saat get_engine()
 
         try:
-            result = get_engine().read(upload.read(), mode=mode, length=length, check_luhn=check_luhn)
+            result = get_engine().read(upload.read(), mode=mode, length=length, check_luhn=check_luhn,
+                                       max_passes=max_passes)
         except ImageError as exc:
             return jsonify(error=str(exc)), 422
         return jsonify(result.to_dict())

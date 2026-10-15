@@ -17,8 +17,8 @@ class FakeEngine:
     def __init__(self):
         self.calls = []
 
-    def read(self, data, *, mode, length, check_luhn):
-        self.calls.append((data, mode, length, check_luhn))
+    def read(self, data, *, mode, length, check_luhn, max_passes=None):
+        self.calls.append((data, mode, length, check_luhn, max_passes))
         if data == b"bad":
             raise ImageError("Gambar rusak")
         return FakeResult({"numbers": [{"value": "6032 9812 3456 7899"}], "raw_text": "", "passes": ["asli"],
@@ -41,9 +41,11 @@ class ServerTest(unittest.TestCase):
         r = self.post()
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.get_json()["numbers"][0]["value"], "6032 9812 3456 7899")
-        self.assertEqual(self.engine.calls[-1], (b"img", "card", 16, True))
+        self.assertEqual(self.engine.calls[-1], (b"img", "card", 16, True, None))
         self.post(mode="any", length="12", luhn="0")
-        self.assertEqual(self.engine.calls[-1], (b"img", "any", 12, False))
+        self.assertEqual(self.engine.calls[-1], (b"img", "any", 12, False, None))
+        self.post(passes="1")
+        self.assertEqual(self.engine.calls[-1], (b"img", "card", 16, True, 1))
 
     def test_validation_errors(self):
         self.assertEqual(self.client.post("/api/ocr").status_code, 400)
@@ -51,6 +53,9 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(self.post(length="abc").status_code, 400)
         self.assertEqual(self.post(length="3").status_code, 400)
         self.assertEqual(self.post(length="99").status_code, 400)
+        self.assertEqual(self.post(passes="0").status_code, 400)
+        self.assertEqual(self.post(passes="6").status_code, 400)
+        self.assertEqual(self.post(passes="x").status_code, 400)
         self.assertEqual(self.engine.calls, [])
 
     def test_unreadable_image_is_422_with_message(self):

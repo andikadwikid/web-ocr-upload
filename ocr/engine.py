@@ -120,7 +120,9 @@ class CardOCR:
         return _to_lines(result)
 
     def read(self, data: bytes, *, mode: str = "card", length: int = 16,
-             check_luhn: bool = True) -> OcrResult:
+             check_luhn: bool = True, max_passes: int | None = None) -> OcrResult:
+        """`max_passes` membatasi jumlah percobaan variasi gambar (mis. 1 untuk frame webcam,
+        karena frame berikutnya toh menjadi kesempatan baru)."""
         started = time.perf_counter()
         img = decode_image(data)
 
@@ -142,6 +144,8 @@ class CardOCR:
                 best = (score, cands, lines, name)
             if cands and all(c.ok for c in cands):
                 break  # sudah panjang pas dan lolos checksum: tidak perlu mencoba lagi
+            if max_passes is not None and len(tried) >= max_passes:
+                break
 
         assert best is not None
         _, cands, lines, best_name = best

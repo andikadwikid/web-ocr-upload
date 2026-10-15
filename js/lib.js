@@ -59,6 +59,38 @@ export function lowestConfidence(confidences) {
   return confidences.length ? Math.min(...confidences) : null;
 }
 
+// ---------- Scan webcam ----------
+
+/**
+ * Pelacak konfirmasi untuk pemindaian berkelanjutan: sebuah nomor baru dianggap terbaca
+ * setelah muncul di `required` frame BERURUTAN. Satu frame yang meleset (nomor tidak
+ * terbaca) mengulang hitungan, jadi bacaan yang kebetulan lolos Luhn di satu frame
+ * tidak langsung diterima.
+ */
+export function createConfirmer(required = 2) {
+  let streaks = new Map();
+  return {
+    /**
+     * @param {string[]} digitsInFrame  nomor (digit saja) yang layak pada frame ini
+     * @returns {string[]} nomor yang baru terkonfirmasi pada frame ini (tepat sekali per rentetan)
+     */
+    push(digitsInFrame) {
+      const next = new Map();
+      const confirmed = [];
+      for (const digits of new Set(digitsInFrame)) {
+        const count = (streaks.get(digits) ?? 0) + 1;
+        next.set(digits, count);
+        if (count === required) confirmed.push(digits);
+      }
+      streaks = next;
+      return confirmed;
+    },
+    reset() {
+      streaks = new Map();
+    },
+  };
+}
+
 // ---------- Ekspor ----------
 
 /** Cegah "CSV injection": sel yang diawali = + - @ dibaca Excel sebagai rumus. */
