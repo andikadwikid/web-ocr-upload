@@ -7,6 +7,7 @@ unduhan tambahan dan bisa dipakai offline.
 from __future__ import annotations
 
 import io
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -17,6 +18,12 @@ import numpy as np
 from PIL import Image, ImageOps
 
 from .cardnum import Candidate, Line, find_card_numbers, find_numbers, summarize
+
+# ONNX Runtime (build pip) memuat SDK telemetri Microsoft yang mencoba menghubungi
+# mobile.events.data.microsoft.com beberapa detik setelah model dimuat. Fungsi
+# onnxruntime.disable_telemetry_events() terukur TIDAK menghentikannya; variabel ini yang efektif.
+# Harus diatur sebelum onnxruntime diimpor/dipakai.
+os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
 
 MAX_SIDE = 2400  # foto kamera 12 MP diperkecil agar OCR tidak lambat
 

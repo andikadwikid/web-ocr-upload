@@ -5,7 +5,7 @@ Unggah banyak foto kartu (e-money, dll.) sekaligus, lalu nomor kartunya dibaca o
 disalin langsung ke Excel/Google Sheets.
 
 OCR dijalankan oleh server Python di komputer Anda sendiri (RapidOCR, model PaddleOCR lewat ONNX Runtime).
-Foto **tidak dikirim ke internet**, dan tidak ada unduhan model: model ikut terpasang bersama library.
+Foto **tidak dikirim ke internet** (lihat bagian Privasi), dan tidak ada unduhan model: model ikut terpasang bersama library.
 
 ## Pasang & jalankan
 
@@ -84,6 +84,16 @@ Batasannya perlu dipahami:
   digitnya benar, matikan opsi Luhn.
 - Foto yang buram sekali atau nomor yang tertutup silau pasti tetap bisa gagal; itulah gunanya tanda "Periksa".
 
+## Privasi
+
+- Foto diproses di mesin ini saja; server tidak punya kode yang mengirim foto ke mana pun dan tidak menyimpannya.
+- ONNX Runtime versi pip memuat SDK telemetri Microsoft. Saat diukur dengan `strace`, tanpa pengaturan khusus library itu
+  mencoba menghubungi `mobile.events.data.microsoft.com` dalam ±10-45 detik setelah model dimuat. Fungsi
+  `onnxruntime.disable_telemetry_events()` **tidak** menghentikannya; variabel lingkungan `ORT_DISABLE_TELEMETRY=1` yang
+  menghentikannya (0 percobaan koneksi dalam 80 detik). Kode (`ocr/engine.py`) mengaturnya otomatis sebelum model dimuat, jadi berlaku juga bila `server.py` dijalankan di dalam Docker atau lingkungan lain.
+  Isi yang akan dikirim tidak saya periksa.
+- Bila Anda mengganti `ocr/engine.py` atau memuat ONNX Runtime dengan cara lain, atur variabel itu sendiri.
+
 ## Batasan
 
 - HEIC/HEIF/AVIF (foto iPhone tertentu) belum didukung; ekspor dulu ke JPG.
@@ -105,6 +115,7 @@ POST /api/ocr    multipart: file, mode=card|any (default card), length=8..24 (de
 
 ```
 server.py           Flask + waitress: menyajikan halaman dan /api/ocr
+requirements.txt    dependensi Python
 ocr/cardnum.py      ekstraksi nomor kartu & Luhn (murni, mudah diuji)
 ocr/engine.py       RapidOCR + percobaan ulang bervariasi
 index.html css/ js/ antarmuka web (JS biasa, tanpa build)

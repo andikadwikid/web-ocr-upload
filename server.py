@@ -8,6 +8,7 @@ Menyajikan halaman (index.html, css/, js/) dan API OCR:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import threading
 from pathlib import Path, PurePosixPath
 
@@ -98,12 +99,12 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8080)
     args = parser.parse_args()
 
-    try:
-        from waitress import serve
-
-        import rapidocr_onnxruntime  # noqa: F401  (hanya memeriksa terpasang)
-    except ImportError as exc:
-        raise SystemExit(f"Library belum terpasang ({exc.name}). Jalankan: pip install -r requirements.txt")
+    # find_spec tidak mengimpor paketnya: onnxruntime baru boleh dimuat setelah ocr.engine
+    # mengatur ORT_DISABLE_TELEMETRY.
+    missing = [m for m in ("waitress", "rapidocr_onnxruntime") if importlib.util.find_spec(m) is None]
+    if missing:
+        raise SystemExit(f"Library belum terpasang ({', '.join(missing)}). Jalankan: pip install -r requirements.txt")
+    from waitress import serve
 
     def warm_up() -> None:  # muat model di latar belakang agar foto pertama tidak menunggu
         from ocr.engine import get_engine
