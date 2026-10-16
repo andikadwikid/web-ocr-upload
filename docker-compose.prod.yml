@@ -1,0 +1,22 @@
+# Compose untuk VPS: tidak membuka port ke host. Container hanya terhubung ke network `web`
+# milik Caddy (global_caddy), yang mem-proxy https://ocr.declarationdigital.tech ke sini.
+#   docker compose -f docker-compose.prod.yml up -d --build
+services:
+  web-ocr:
+    build: .
+    container_name: web-ocr-upload
+    restart: unless-stopped
+    expose:
+      - "8080"
+    networks:
+      - web
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+networks:
+  web:
+    external: true
