@@ -20,6 +20,7 @@ const THUMB_SIZE = 112;
 const CONF_OK = 80;
 const CONF_WARN = 60;
 const SETTINGS_KEY = 'ocr-angka-massal:settings:v2';
+const RESULTS_KEY = 'ocr-angka-massal:hasil:v1';
 const VALUE_SEPARATOR = ' ; ';
 
 const defaultSettings = {
@@ -54,6 +55,7 @@ const els = {
   stop: $('stop'),
   redo: $('redo'),
   clear: $('clear'),
+  flushStorage: $('flush-storage'),
   download: $('download'),
   copy: $('copy'),
   empty: $('empty'),
@@ -147,6 +149,47 @@ function bindSettings() {
 
 const currentOpts = () => ({ mode: settings.mode, length: settings.length, luhn: settings.luhn });
 
+// ------------------------------------------------------- hasil tersimpan (localStorage)
+
+/**
+ * Hanya hasil (bukan file foto, yang tidak bisa disimpan di localStorage) disimpan
+ * di sini, supaya nomor yang sudah terbaca tidak hilang kalau halaman di-refresh
+ * tak sengaja. Baris yang dipulihkan tidak punya file asli: thumbnail, lihat foto,
+ * dan proses ulang tidak tersedia, tapi nomornya tetap bisa diedit dan diekspor.
+ */
+function loadStoredResults() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(RESULTS_KEY) ?? '[]');
+    return Array.isArray(saved) ? saved : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveStoredResults() {
+  // rawText/passes tidak disertakan: hanya dipakai di viewer foto, yang nonaktif untuk
+  // baris yang dipulihkan (tidak ada file asli) — menyimpannya hanya memboroskan kuota.
+  const rows = state.items
+    .filter((i) => i.status === 'done' || i.status === 'error')
+    .map((i) => ({
+      path: i.path, status: i.status, opts: i.opts, found: i.found, values: i.values,
+      confidence: i.confidence, edited: i.edited, error: i.error,
+    }));
+  try {
+    localStorage.setItem(RESULTS_KEY, JSON.stringify(rows));
+  } catch {
+    /* penyimpanan diblokir atau penuh: hasil tetap tampil di halaman, hanya tidak tersimpan */
+  }
+}
+
+function flushStoredResults() {
+  try {
+    localStorage.removeItem(RESULTS_KEY);
+  } catch {
+    /* penyimpanan diblokir: abaikan */
+  }
+}
+
 // --------------------------------------------------------------------- notice
 
 let noticeTimer = 0;
@@ -203,7 +246,7 @@ function addFiles(entries) {
   updateSummary();
 }
 
-function createItem({ file, path, key }) {
+function createItem({ file, path, key, restored = false }) {
   const li = els.rowTpl.content.firstElementChild.cloneNode(true);
   const ui = {
     li,
@@ -224,6 +267,7 @@ function createItem({ file, path, key }) {
     key,
     file,
     path,
+    restored, // true = dipulihkan dari localStorage; tidak ada file asli (lihat foto/proses ulang nonaktif)
     status: 'queued', // queued | processing | done | error
     opts: currentOpts(), // pengaturan saat foto ini diproses (dipakai untuk validasi)
     found: [], // hasil server: [{value, digits, confidence, luhn, length_ok, note}]
@@ -238,10 +282,15 @@ function createItem({ file, path, key }) {
 
   ui.name.textContent = path;
   ui.name.title = path;
-  ui.size.textContent = formatBytes(file.size);
+  ui.size.textContent = restored ? 'tersimpan' : formatBytes(file.size);
 
-  ui.thumbBtn.addEventListener('click', () => openViewer(item));
+  ui.thumbBtn.addEventListener('click', () => { if (!item.restored) openViewer(item); });
+  if (restored) {
+    ui.thumbBtn.disabled = true;
+    ui.thumbBtn.title = 'Foto asli tidak tersimpan setelah refresh';
+  }
   ui.retry.addEventListener('click', () => {
+    if (item.restored) return;
     resetItem(item);
     updateRow(item);
     start();
@@ -340,9 +389,9 @@ function updateRow(item) {
   ui.numbers.disabled = item.status !== 'done';
   if (document.activeElement !== ui.numbers) ui.numbers.value = item.values.join(VALUE_SEPARATOR);
 
-  ui.retry.disabled = item.status === 'processing';
+  ui.retry.disabled = item.status === 'processing' || item.restored;
   ui.remove.disabled = item.status === 'processing';
-  ui.retry.hidden = item.status === 'queued';
+  ui.retry.hidden = item.status === 'queued' || item.restored;
 
   const a = assess(item);
   ui.note.textContent = a.note;
@@ -376,6 +425,7 @@ function counts() {
 }
 
 function updateSummary() {
+  saveStoredResults();
   const total = state.items.length;
   const c = counts();
   const finished = c.done + c.error;
@@ -731,9 +781,43 @@ function bindActions() {
     updateSummary();
   });
 
+  els.flushStorage.addEventListener('click', () => {
+    if (!confirm('Hapus semua hasil OCR yang tersimpan di penyimpanan lokal browser ini? Daftar yang sedang tampil juga akan dikosongkan.')) return;
+    state.items = [];
+    state.keys.clear();
+    els.results.replaceChildren();
+    flushStoredResults();
+    hideNotice();
+    updateSummary();
+    showNotice('Data tersimpan sudah dihapus.', 'info', 4000);
+  });
+
   window.addEventListener('beforeunload', (e) => {
     if (state.items.some((i) => i.status === 'done')) e.preventDefault();
   });
+}
+
+/** Munculkan kembali hasil OCR dari sesi sebelumnya (tanpa file foto, lihat batasan di saveStoredResults). */
+function restoreStoredResults() {
+  const saved = loadStoredResults();
+  if (!saved.length) return;
+
+  const fragment = document.createDocumentFragment();
+  for (const row of saved) {
+    const key = `restored|${row.path}|${state.nextId}`;
+    const item = createItem({ file: null, path: row.path, key, restored: true });
+    state.keys.add(key);
+    Object.assign(item, {
+      status: row.status, opts: row.opts, found: row.found, values: row.values,
+      confidence: row.confidence, edited: row.edited, error: row.error,
+    });
+    state.items.push(item);
+    fragment.append(item.ui.li);
+    updateRow(item);
+  }
+  els.results.append(fragment);
+  showNotice(`${saved.length} hasil dipulihkan dari sesi sebelumnya (foto asli tidak tersimpan).`, 'info', 6000);
+  updateSummary();
 }
 
 // ------------------------------------------------------------------ scan webcam
@@ -793,5 +877,6 @@ els.scanCopy.addEventListener('click', () => copyTSV((message, kind) => scanner.
 bindSettings();
 bindInputs();
 bindActions();
+restoreStoredResults();
 updateSummary();
 checkServer().then((ok) => { if (!ok) showNotice(serverDownMessage(), 'error'); });
